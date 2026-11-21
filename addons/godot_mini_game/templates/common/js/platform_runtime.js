@@ -37,6 +37,7 @@ function _normalisePlatform(value) {
   if (name === "wechat" || name === "weixin" || name === "wx") return "wechat";
   if (name === "douyin" || name === "tt") return "douyin";
   if (name === "tiktok" || name === "tiktok_native") return "tiktok";
+  if (name === "taptap" || name === "tap") return "taptap";
   return "unknown";
 }
 
@@ -64,6 +65,7 @@ class PlatformProvider {
     const globalTtMinis = _objectOrNull(this.global.TTMinis);
     const tiktokApi = _objectOrNull(scopeTtMinis && scopeTtMinis.game)
       || _objectOrNull(globalTtMinis && globalTtMinis.game);
+    const tapApi = _objectOrNull(scope.tap);
 
     if (explicitPlatform === "wechat") {
       this.platform = "wechat";
@@ -77,6 +79,10 @@ class PlatformProvider {
       this.platform = "tiktok";
       this.apiPrefix = "TTMinis.game";
       this.api = tiktokApi || EMPTY_API;
+    } else if (explicitPlatform === "taptap") {
+      this.platform = "taptap";
+      this.apiPrefix = "tap";
+      this.api = tapApi || EMPTY_API;
     } else if (tiktokApi) {
       // TTMinis.game is a TikTok-specific signal. TikTok may also expose `wx`
       // and `tt` compatibility aliases, so this must win every automatic tie.
@@ -91,6 +97,11 @@ class PlatformProvider {
       this.platform = "douyin";
       this.apiPrefix = "tt";
       this.api = ttApi;
+    } else if (tapApi) {
+      // `tap` is a TapTap-specific signal, independent of WeChat/Douyin/TikTok.
+      this.platform = "taptap";
+      this.apiPrefix = "tap";
+      this.api = tapApi;
     } else {
       this.platform = explicitPlatform;
       this.apiPrefix = "platform";
@@ -119,7 +130,7 @@ class PlatformProvider {
   requireApi(consumer = "mini-game runtime") {
     if (this.available) return this.api;
     throw new Error(
-      `[PlatformRuntime] ${consumer} requires a WeChat (wx), Douyin (tt), or TikTok (TTMinis.game) mini-game API`,
+      `[PlatformRuntime] ${consumer} requires a WeChat (wx), Douyin (tt), TikTok (TTMinis.game), or TapTap (tap) mini-game API`,
     );
   }
 

@@ -17,6 +17,7 @@ async function loadRuntime({
   ttApi,
   tiktokApi,
   gameGlobalTiktokApi,
+  tapApi,
   explicitPlatform,
   cachedRuntime,
   wxWebAssembly,
@@ -26,6 +27,7 @@ async function loadRuntime({
   delete globalThis.wx;
   delete globalThis.tt;
   delete globalThis.TTMinis;
+  delete globalThis.tap;
   delete globalThis.WXWebAssembly;
   delete globalThis.TTWebAssembly;
   delete globalThis.__godotMiniGamePlatformRuntime;
@@ -39,6 +41,7 @@ async function loadRuntime({
   if (ttApi) globalThis.tt = ttApi;
   if (tiktokApi) globalThis.TTMinis = { game: tiktokApi };
   if (gameGlobalTiktokApi) globalThis.GameGlobal.TTMinis = { game: gameGlobalTiktokApi };
+  if (tapApi) globalThis.tap = tapApi;
   if (wxWebAssembly) globalThis.WXWebAssembly = wxWebAssembly;
   if (ttWebAssembly) globalThis.TTWebAssembly = ttWebAssembly;
   if (gameGlobalTtWebAssembly) globalThis.GameGlobal.TTWebAssembly = gameGlobalTtWebAssembly;
@@ -123,6 +126,55 @@ async function testGameGlobalTiktokDetection() {
   assert.equal(PlatformRuntime.api, gameGlobalTiktokApi);
   assert.notEqual(PlatformRuntime.api, wxApi);
   assert.notEqual(PlatformRuntime.api, ttApi);
+}
+
+async function testTapOnlyDetection() {
+  const tapApi = makeApi();
+  const { PlatformRuntime } = await loadRuntime({ tapApi });
+
+  assert.equal(PlatformRuntime.platform, "taptap");
+  assert.equal(PlatformRuntime.apiPrefix, "tap");
+  assert.equal(PlatformRuntime.requireApi("test"), tapApi);
+  assert.equal(PlatformRuntime.requirePlatform("taptap", "TapTap entrypoint"), tapApi);
+  assert.equal(PlatformRuntime.capabilities.canvas, true);
+  assert.equal(PlatformRuntime.capabilities.request, true);
+}
+
+async function testExplicitTapBreaksATie() {
+  const tapApi = makeApi();
+  const wxApi = makeApi();
+  const { PlatformRuntime } = await loadRuntime({
+    wxApi,
+    tapApi,
+    explicitPlatform: "taptap",
+  });
+
+  assert.equal(PlatformRuntime.platform, "taptap");
+  assert.equal(PlatformRuntime.api, tapApi);
+}
+
+async function testTapAutoDetectionLosesToWechatAndDouyin() {
+  // `tap` is the last automatic signal; WeChat/Douyin/TikTok must win ties.
+  const tapApi = makeApi();
+  const wxApi = makeApi();
+  const wxWins = await loadRuntime({ wxApi, tapApi });
+  assert.equal(wxWins.PlatformRuntime.platform, "wechat");
+  assert.equal(wxWins.PlatformRuntime.api, wxApi);
+
+  const ttApi = makeApi();
+  const ttWins = await loadRuntime({ ttApi, tapApi });
+  assert.equal(ttWins.PlatformRuntime.platform, "douyin");
+  assert.equal(ttWins.PlatformRuntime.api, ttApi);
+}
+
+async function testTapRequireApiFailureMentionsTapTap() {
+  const { PlatformRuntime } = await loadRuntime();
+  assert.throws(
+    () => PlatformRuntime.requireApi("adapter"),
+    (error) => error instanceof Error
+      && !(error instanceof ReferenceError)
+      && error.message.includes("TapTap (tap)"),
+  );
 }
 
 async function testNeitherProviderHasADescriptiveFailure() {
@@ -252,6 +304,10 @@ await testWxOnlyDetection();
 await testTtOnlyDetection();
 await testTiktokOnlyDetection();
 await testGameGlobalTiktokDetection();
+await testTapOnlyDetection();
+await testExplicitTapBreaksATie();
+await testTapAutoDetectionLosesToWechatAndDouyin();
+await testTapRequireApiFailureMentionsTapTap();
 await testNeitherProviderHasADescriptiveFailure();
 await testExplicitPlatformBreaksATwoProviderTie();
 await testMixedProvidersHaveStablePrecedence();
