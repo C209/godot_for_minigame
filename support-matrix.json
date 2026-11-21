@@ -45,6 +45,20 @@
         "devtoolCompile": "required",
         "realDevice": "required-for-release"
       }
+    },
+    "taptap": {
+      "runtimeType": "native",
+      "supportTier": "beta",
+      "apiNamespace": "tap",
+      "subpackageField": "subpackages",
+      "packageLimitsBytes": {
+        "total": 62914560
+      },
+      "validation": {
+        "exportSmoke": "automated",
+        "devtoolCompile": "manual",
+        "realDevice": "manual"
+      }
     }
   },
   "certified": [
@@ -62,7 +76,8 @@
       "platforms": {
         "wechat": "automated",
         "douyin": "automated",
-        "tiktok": "automated"
+        "tiktok": "automated",
+        "taptap": "automated"
       }
     },
     {
@@ -85,7 +100,8 @@
       "platforms": {
         "wechat": "automated",
         "douyin": "automated",
-        "tiktok": "automated"
+        "tiktok": "automated",
+        "taptap": "automated"
       }
     },
     {
@@ -105,7 +121,8 @@
       "platforms": {
         "wechat": "automated",
         "douyin": "automated",
-        "tiktok": "automated"
+        "tiktok": "automated",
+        "taptap": "automated"
       }
     }
   ]

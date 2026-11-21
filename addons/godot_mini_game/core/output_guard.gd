@@ -22,6 +22,11 @@ const PLATFORM_CONTRACTS := {
 		"api_namespace": "TTMinis.game",
 		"subpackage_field": "subpackages",
 	},
+	"taptap": {
+		"runtime_type": "native",
+		"api_namespace": "tap",
+		"subpackage_field": "subpackages",
+	},
 }
 
 
@@ -242,7 +247,7 @@ static func _has_valid_metadata(manifest: Dictionary) -> bool:
 		return false
 	# platform_contract was added additively while schema 1 was already public.
 	# Preserve ownership for legacy WeChat/Douyin exports so v0.3 can replace
-	# them transactionally. TikTok never had a legacy schema-1 output.
+	# them transactionally. TikTok and TapTap never had a legacy schema-1 output.
 	if manifest.has("platform_contract"):
 		var contract_value: Variant = manifest.get("platform_contract")
 		if not contract_value is Dictionary:
@@ -256,7 +261,7 @@ static func _has_valid_metadata(manifest: Dictionary) -> bool:
 			!= str(expected.subpackage_field)
 		):
 			return false
-	elif platform == "tiktok":
+	elif platform == "tiktok" or platform == "taptap":
 		return false
 	var template_value: Variant = manifest.get("template", {})
 	if not template_value is Dictionary:

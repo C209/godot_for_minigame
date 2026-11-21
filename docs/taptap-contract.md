@@ -1,6 +1,7 @@
 # TapTap 平台移植契约（Phase 0 预研产出）
 
-> 状态：预研草稿。目标是把 `tap` 平台作为 godot_for_minigame 的第四平台接入。
+> 状态：Phase 1 已落地（tap provider + templates/taptap 三件套 + support-matrix/exporter/output_guard/dock 接入 + 自动测试）。
+> 目标是把 `tap` 平台作为 godot_for_minigame 的第四平台接入。
 > 参考项目：`C:\Work\Unity\Tools\minigame-sdk-unity`（com.taptap.minigame v2.0.21，TapTap 提供给团结引擎 Tuanjie 的 SDK）。
 > 证据来源：TapTap 官方文档 developer.taptap.cn/minigameapidoc + 本地 Unity SDK 源码。
 > 确定性标注：【确认】= 官方文档或源码明确；【推断】= 与微信/抖音同构的合理推断；【待验证】= 须真机/开发者工具实测。
@@ -171,13 +172,30 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 - **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现（本次为 Android 真机，iOS 未测）。
 - **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
 
-## 6. Phase 1 实现清单（改动面）
+## 6. Phase 1 实现记录
 
-1. `templates/common/js/platform_runtime.js`：`_normalisePlatform` 加 `taptap`；构造函数加 `scope.tap` 探测分支；`getNativeWebAssemblyApis()` 加 tap 原生 WASM（待 §5.1 结论）；错误信息加 TapTap。
-2. `templates/taptap/game.js`：`requirePlatform("taptap")`。
-3. `templates/taptap/game.json.template`：`deviceOrientation` + `subpackages`（小写）+ `iOSHighPerformance`（+ 可选 `parallelPreloadSubpackages`/`workers`）。
-4. `templates/taptap/project.config.json.template`（复用 wechat 结构，仅替换 appid/projectname 占位符）。
-5. `exporter.gd`：`SUPPORTED_PLATFORMS` + `PLATFORM_CONTRACTS["taptap"]`。
-6. `support-matrix.json`：`platformContracts.tapTap`。
-7. `export_dock.gd`：TapTap 平台选项 + AppID 输入。
-8. `MiniGameSDK.gd`（Phase 3）：TapTap 特有 API。
+| # | 改动 | 状态 |
+|---|---|---|
+| 1 | `templates/common/js/platform_runtime.js`：`taptap` 归一化、`scope.tap`/`GameGlobal.tap` 探测、错误信息、`getNativeWebAssemblyApis()` 对 tap 返回空 | ✅ |
+| 2 | `templates/taptap/game.js`：`requirePlatform("taptap", "TapTap entrypoint")` + 受保护的更新检查 | ✅ |
+| 3 | `templates/taptap/game.json.template`：`deviceOrientation` + `iOSHighPerformance` + `subpackages`（小写）/ `engine` + `subpacks` | ✅ |
+| 4 | `templates/taptap/project.config.json.template`：复用微信结构（Unity 产物 `simulatorType:"wechat"`、`libVersion:"3.5.1"`） | ✅ |
+| 5 | `exporter.gd`：`SUPPORTED_PLATFORMS` + `PLATFORM_CONTRACTS["taptap"]`（`tap` / `subpackages` / 无 private config / 允许 eval） | ✅ |
+| 6 | `core/output_guard.gd`：taptap 所有权清单契约（旧清单不认领） | ✅ |
+| 7 | `export_dock.gd`：TapTap 平台选项 | ✅ |
+| 8 | `support-matrix.json`：`platformContracts.taptap`（`supportTier: beta`）+ 每行 `platforms.taptap: automated` | ✅ |
+| 9 | 自动测试：`tap_platform_smoke.test.mjs`、`entry_platform`、`platform_runtime`、`exporter_platform_contract`、`release_contract`、CI `taptap` 校验分支 | ✅ |
+| 10 | `MiniGameSDK.gd` TapTap 特有 API（分享板/成就/云存档/排行榜/支付/首页小组件/对战） | ⏳ Phase 3 |
+
+### 关键实现决策
+
+- **TapTap 走标准 `WebAssembly`，不启用 `WXWebAssembly` 路径 shim**：`getNativeWebAssemblyApis()` 对 `taptap` 返回空数组。adapter 的原生 shim 会把 `instantiate(ArrayBuffer)` 改写成 `instantiate(文件路径)`，而真机探测已确认标准 `WebAssembly.instantiate(buffer)` 可用，启用 shim 反而替换掉可工作的实现。`tap_platform_smoke` 里用「注入 WXWebAssembly 后 `globalThis.WebAssembly` 不变」锁定该决策。
+- **`game.json` 保持最小集**：不写 `plugins`（不需要 UnityPlugin）、不写 `workers`（TapTap 的 `workers` 是字符串目录名，本项目未使用 worker）。`parallelPreloadSubpackages` 留作后续启动优化，未默认开启。
+- **分包占位文件沿用微信/抖音的零字节行为**：TapTap CLI 上传是否拒绝零字节文件尚未验证；若真机发现拒绝，把 `taptap` 加入 `zero_byte_allowed` 排除项并写注释占位即可。
+- **`supportTier: beta`**：Android 真机只验证了引擎启动与 WebGL2/WASM，iOS、开放能力、DevTools/CLI 全链路仍未验收。
+
+## 7. 后续阶段（Phase 2–4 待办）
+
+- Phase 2：`USAGE`/`README` 中的 TapTap 导出与上传步骤（`taptap-cli` 上传开发测试包 + 后台扫码），以及可选的 `parallelPreloadSubpackages` 启动优化。
+- Phase 3：按 Unity Wrapper 语义实现 TapTap 特有能力的 GDScript + JS bridge，逐项真机核对签名。
+- Phase 4：官网/文档平台矩阵更新、真机回归（iOS 高性能模式内存、音频驱动分支、`canvas` 字体）。

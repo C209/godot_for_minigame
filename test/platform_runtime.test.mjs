@@ -18,6 +18,7 @@ async function loadRuntime({
   tiktokApi,
   gameGlobalTiktokApi,
   tapApi,
+  gameGlobalTapApi,
   explicitPlatform,
   cachedRuntime,
   wxWebAssembly,
@@ -42,6 +43,7 @@ async function loadRuntime({
   if (tiktokApi) globalThis.TTMinis = { game: tiktokApi };
   if (gameGlobalTiktokApi) globalThis.GameGlobal.TTMinis = { game: gameGlobalTiktokApi };
   if (tapApi) globalThis.tap = tapApi;
+  if (gameGlobalTapApi) globalThis.GameGlobal.tap = gameGlobalTapApi;
   if (wxWebAssembly) globalThis.WXWebAssembly = wxWebAssembly;
   if (ttWebAssembly) globalThis.TTWebAssembly = ttWebAssembly;
   if (gameGlobalTtWebAssembly) globalThis.GameGlobal.TTWebAssembly = gameGlobalTtWebAssembly;
@@ -138,6 +140,28 @@ async function testTapOnlyDetection() {
   assert.equal(PlatformRuntime.requirePlatform("taptap", "TapTap entrypoint"), tapApi);
   assert.equal(PlatformRuntime.capabilities.canvas, true);
   assert.equal(PlatformRuntime.capabilities.request, true);
+}
+
+async function testGameGlobalTapDetection() {
+  // A TapTap host that keeps `tap` on GameGlobal must still be detected.
+  const gameGlobalTapApi = makeApi();
+  const { PlatformRuntime } = await loadRuntime({ gameGlobalTapApi });
+
+  assert.equal(globalThis.tap, undefined);
+  assert.equal(PlatformRuntime.platform, "taptap");
+  assert.equal(PlatformRuntime.apiPrefix, "tap");
+  assert.equal(PlatformRuntime.api, gameGlobalTapApi);
+}
+
+async function testTapKeepsTheStandardWebAssemblyPath() {
+  // TapTap injects WXWebAssembly too, but the provider must not advertise it:
+  // the adapter's native shim rewrites instantiate(ArrayBuffer) into a file-path
+  // call, which the standard WebAssembly object does not need.
+  const wxWebAssembly = { instantiate() {} };
+  const { PlatformRuntime } = await loadRuntime({ tapApi: makeApi(), wxWebAssembly });
+  assert.deepEqual(PlatformRuntime.getNativeWebAssemblyApis(), []);
+  assert.equal(PlatformRuntime.capabilities.webAssembly, true);
+  assert.equal(PlatformRuntime.getStandardWebAssembly(), globalThis.WebAssembly);
 }
 
 async function testExplicitTapBreaksATie() {
@@ -305,6 +329,8 @@ await testTtOnlyDetection();
 await testTiktokOnlyDetection();
 await testGameGlobalTiktokDetection();
 await testTapOnlyDetection();
+await testGameGlobalTapDetection();
+await testTapKeepsTheStandardWebAssemblyPath();
 await testExplicitTapBreaksATie();
 await testTapAutoDetectionLosesToWechatAndDouyin();
 await testTapRequireApiFailureMentionsTapTap();

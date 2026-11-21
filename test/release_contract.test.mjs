@@ -21,13 +21,18 @@ assert.equal(supportMatrix.requiresExactEngineTemplate, true);
 assert.ok(Number.isInteger(supportMatrix.templateSchema) && supportMatrix.templateSchema > 0);
 assert.ok(Number.isInteger(supportMatrix.outputManifestSchema) && supportMatrix.outputManifestSchema > 0);
 assert.ok(Array.isArray(supportMatrix.certified) && supportMatrix.certified.length > 0);
-const expectedPlatforms = ["douyin", "tiktok", "wechat"];
+const expectedPlatforms = ["douyin", "taptap", "tiktok", "wechat"];
 assert.deepEqual(
   Object.keys(supportMatrix.platformContracts || {}).sort(),
   expectedPlatforms,
-  "support matrix must define exactly the three exported platforms",
+  "support matrix must define exactly the four exported platforms",
 );
-const { wechat: wechatContract, douyin: douyinContract, tiktok: tiktokContract } = supportMatrix.platformContracts;
+const {
+  wechat: wechatContract,
+  douyin: douyinContract,
+  tiktok: tiktokContract,
+  taptap: taptapContract,
+} = supportMatrix.platformContracts;
 assert.equal(wechatContract.runtimeType, "native");
 assert.equal(wechatContract.apiNamespace, "wx");
 assert.equal(wechatContract.subpackageField, "subpackages");
@@ -47,6 +52,11 @@ assert.ok(
   ) >= 0,
   "TikTok native WebAssembly support requires client 43.4.0 or newer",
 );
+assert.equal(taptapContract.runtimeType, "native");
+assert.equal(taptapContract.supportTier, "beta");
+assert.equal(taptapContract.apiNamespace, "tap");
+assert.equal(taptapContract.subpackageField, "subpackages");
+assert.equal(taptapContract.packageLimitsBytes.total, 60 * 1024 * 1024);
 for (const target of supportMatrix.certified) {
   assert.match(target.godotVersion, /^\d+\.\d+\.\d+\.[A-Za-z0-9]+$/);
   assert.match(target.godotCommit, /^[0-9a-f]{40}$/i);
@@ -139,6 +149,7 @@ for (const [platform, expected] of [
   ["wechat", "wechat"],
   ["douyin", "douyin"],
   ["tiktok", "tiktok"],
+  ["taptap", "taptap"],
 ]) {
   const entry = read(`addons/godot_mini_game/templates/${platform}/game.js`);
   assert.ok(
@@ -337,5 +348,25 @@ for (const requiredIdentity of [
 }
 
 assert.match(read(".gitignore"), /^\.cursor\/$/m, "local Cursor state must never block a release");
+
+// Windows checkouts with core.autocrlf=true must not rewrite the pinned engine
+// bytes: CRLF breaks the exporter's multi-line godot.js patch anchors and the
+// SHA-256 recorded in engine/template.json.
+const gitattributes = read(".gitattributes");
+assert.match(
+  gitattributes,
+  /^\* text=auto eol=lf$/m,
+  "text files must be LF-normalized on every platform",
+);
+assert.match(
+  gitattributes,
+  /^addons\/godot_mini_game\/engine\/godot\.js -text$/m,
+  "the hash-pinned engine wrapper must never be line-ending converted",
+);
+assert.match(
+  gitattributes,
+  /^addons\/godot_mini_game\/engine\/godot\.wasm\.br binary$/m,
+  "the hash-pinned engine binary must never be line-ending converted",
+);
 
 console.log("release_contract.test.mjs: ok");

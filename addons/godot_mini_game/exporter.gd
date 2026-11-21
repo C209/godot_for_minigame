@@ -12,7 +12,7 @@ const OUTPUT_MANIFEST: String = OutputGuard.OWNERSHIP_FILE
 const PUBLISH_JOURNAL := "journal.json"
 const PUBLISH_JOURNAL_SCHEMA_VERSION := 1
 
-const SUPPORTED_PLATFORMS: PackedStringArray = ["wechat", "douyin", "tiktok"]
+const SUPPORTED_PLATFORMS: PackedStringArray = ["wechat", "douyin", "tiktok", "taptap"]
 const SUPPORTED_ORIENTATIONS: PackedStringArray = ["portrait", "landscape"]
 const PLATFORM_CONTRACTS := {
 	"wechat": {
@@ -38,6 +38,14 @@ const PLATFORM_CONTRACTS := {
 		"subpackage_field": "subpackages",
 		"requires_private_config": false,
 		"forbids_javascript_eval": true,
+	},
+	"taptap": {
+		"display_name": "TapTap 小游戏",
+		"runtime_type": "native",
+		"api_namespace": "tap",
+		"subpackage_field": "subpackages",
+		"requires_private_config": false,
+		"forbids_javascript_eval": false,
 	},
 }
 const COMMON_TEMPLATE_MAPPINGS := {

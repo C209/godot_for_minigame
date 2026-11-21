@@ -195,7 +195,7 @@ Godot compatibility is data in `support-matrix.json`, not a broad `4.x` claim.
 Each certified row records an exact tag, source commit, Emscripten version,
 profile, ABI, revision, and per-platform automation status. Adding Godot 4.7, for example, means building
 and verifying a new bundle, importing it beside 4.6.1, extending the matrix,
-and running the WeChat, Douyin, and TikTok smoke exports. It does not require replacing
+and running the WeChat, Douyin, TikTok, and TapTap smoke exports. It does not require replacing
 the 4.6.1 bundle.
 
 Exactly one row uses `template.source: bundled`. Additional rows use a pinned
@@ -205,7 +205,7 @@ testing, so adding a row also adds the corresponding test jobs.
 
 插件 SemVer、模板 schema、Bridge ABI、输出 manifest schema 是四条独立版本轴。
 Godot 支持范围只由 `support-matrix.json` 的精确记录定义；新增 4.7 时，应新增并验证
-一份并存模板、扩展矩阵并跑微信、抖音与 TikTok 三个平台冒烟，而不是覆盖 4.6.1。
+一份并存模板、扩展矩阵并跑微信、抖音、TikTok 与 TapTap 四个平台冒烟，而不是覆盖 4.6.1。
 其中恰好一行使用 `template.source: bundled`；其它版本引用固定的模板 Release tag 与
 asset。CI 会把每个 `automated` 平台项展开为对应 Godot 精确版本的导出任务。
 `automated` 只描述仓库导出冒烟，不等于 DevTool 编译或真机认证；展示层与发布流程

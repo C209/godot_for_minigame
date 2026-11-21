@@ -21,12 +21,14 @@ async function importEntrypoint(entryPlatform, availablePlatform) {
   delete globalThis.wx;
   delete globalThis.tt;
   delete globalThis.TTMinis;
+  delete globalThis.tap;
   delete globalThis.__godotMiniGamePlatformRuntime;
   delete globalThis.PlatformRuntime;
   globalThis.GameGlobal = {};
   if (availablePlatform === "wechat") globalThis.wx = {};
   if (availablePlatform === "douyin") globalThis.tt = {};
   if (availablePlatform === "tiktok") globalThis.TTMinis = { game: {} };
+  if (availablePlatform === "taptap") globalThis.tap = {};
   globalThis.__entryLoaderCalls = 0;
 
   const runtimeUrl = moduleUrl(read("common/js/platform_runtime.js"));
@@ -45,7 +47,7 @@ async function importEntrypoint(entryPlatform, availablePlatform) {
   return import(moduleUrl(source));
 }
 
-for (const platform of ["wechat", "douyin", "tiktok"]) {
+for (const platform of ["wechat", "douyin", "tiktok", "taptap"]) {
   await importEntrypoint(platform, platform);
   assert.equal(globalThis.__entryLoaderCalls, 1, `${platform} should boot on its own provider`);
 }
@@ -71,6 +73,18 @@ assert.equal(globalThis.__entryLoaderCalls, 0);
 await assert.rejects(
   importEntrypoint("douyin", "tiktok"),
   /Douyin entrypoint requires douyin, but detected tiktok/,
+);
+assert.equal(globalThis.__entryLoaderCalls, 0);
+
+await assert.rejects(
+  importEntrypoint("taptap", "wechat"),
+  /TapTap entrypoint requires taptap, but detected wechat/,
+);
+assert.equal(globalThis.__entryLoaderCalls, 0);
+
+await assert.rejects(
+  importEntrypoint("tiktok", "taptap"),
+  /TikTok entrypoint requires tiktok, but detected taptap/,
 );
 assert.equal(globalThis.__entryLoaderCalls, 0);
 

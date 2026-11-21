@@ -30,7 +30,7 @@
 <table>
   <tr>
     <td align="center" width="25%"><h3>0 额外依赖</h3><sub>不装 Node.js、Emscripten、Brotli，也不下载 Godot Web 导出模板</sub></td>
-    <td align="center" width="25%"><h3>3 个平台</h3><sub>微信、抖音与 TikTok，同一个 Godot 项目导出</sub></td>
+    <td align="center" width="25%"><h3>4 个平台</h3><sub>微信、抖音、TikTok 与 TapTap，同一个 Godot 项目导出</sub></td>
     <td align="center" width="25%"><h3>230 个 SDK 方法</h3><sub>另有 86 个信号，调用前先检测宿主能力</sub></td>
     <td align="center" width="25%"><h3>3 个 Godot 版本</h3><sub>4.6.1 · 4.6.3 · 4.7.2，引擎与编辑器精确匹配</sub></td>
   </tr>
@@ -81,7 +81,7 @@
 | `4.6.3.stable`（官方编辑器） | `35e80b3a8822` | 导出面板一键下载（[模板 Release](https://github.com/AnranS/godot_for_minigame/releases/tag/template-4.6.3-stable-emsdk-4.0.3-2d-full-release-abi-1-r2)） |
 | `4.6.1.stable` | `14d19694e0c8` | 随插件内置 |
 
-CI 会把每个已认证版本导出到全部三个平台。插件 `v0.3.3` · Emscripten `4.0.3` · 构建 `2d_full` ·
+CI 会把每个已认证版本导出到全部四个平台。插件 `v0.3.3` · Emscripten `4.0.3` · 构建 `2d_full` ·
 `release` · revision `1` · Bridge ABI `1` · template schema `1` · output schema `1`。
 [`support-matrix.json`](support-matrix.json) 是 Release、CI 与官网中这些数值的唯一事实源。
 
@@ -96,6 +96,7 @@ CI 会把每个已认证版本导出到全部三个平台。插件 `v0.3.3` · E
 | 微信小游戏 | `wx` | `subpackages` | ✅ 支持 |
 | 抖音小游戏 | `tt` | `subPackages` | ✅ 支持 |
 | TikTok Mini Game Native | `TTMinis.game` | `subpackages` | 🧪 Beta：需要 TikTok 43.4.0+，每次发布前都要通过 `ttmg` 编译与真机验证 |
+| TapTap 小游戏 | `tap` | `subpackages` | 🧪 Beta：引擎启动与 WebGL2 已在 Android 真机验证；iOS 与 TapTap 开放能力仍需真机验收 |
 
 > [!IMPORTANT]
 > 自动化检查不能替代平台开发者工具和真机上的验收。
@@ -147,7 +148,7 @@ API 页面列出的是完整的桥接接口，不代表每个宿主都支持全�
 
 - 引擎是单线程构建：不支持 `Thread`、GDExtension、C# 和 WebRTC。
 - 小游戏环境没有系统字体：游戏里有中文时，请设置并裁剪[中文字体](docs/USAGE_zh.md#中文字体)。
-- 微信和抖音目前按 1 倍逻辑像素渲染，高分屏上会略显模糊。
+- 微信、抖音和 TapTap 目前按 1 倍逻辑像素渲染，高分屏上会略显模糊。
 - 每次导出只生成一个资源包，暂不支持把游戏资源拆成多个自定义分包。
 - TikTok beta 启动时恢复 `user://`，但不会写回；存储枚举、电池读取与公开文件系统写入会失败关闭。存档请用 `storage_set()` / `storage_get()`，详见[使用指南](docs/USAGE_zh.md#文件系统)。
 - TikTok beta 不启用 Godot 的音频混音器：`AudioStreamGenerator`、Stream 模式播放和总线效果在 TikTok 上没有声音，请通过 `MiniGameSDK` 的 InnerAudio 接口播放声音。
@@ -174,12 +175,12 @@ API 页面列出的是完整的桥接接口，不代表每个宿主都支持全�
   <a href="assets/export-architecture-zh-v3.png">
     <picture>
       <source media="(max-width: 600px)" srcset="assets/export-architecture-zh-mobile-v3.png" />
-      <img src="assets/export-architecture-zh-v3.png" width="720" alt="架构：单个 wx、tt 或 TTMinis.game 目标经过精确模板门禁、同级暂存、清单、哈希、锁与受管路径发布；导出产物再使用唯一 PlatformRuntime Provider、GodotSDK 到 MiniGameSDK 的 Bridge ABI，以及精确身份发布门禁" />
+      <img src="assets/export-architecture-zh-v3.png" width="720" alt="架构：单个 wx、tt、TTMinis.game 或 tap 目标经过精确模板门禁、同级暂存、清单、哈希、锁与受管路径发布；导出产物再使用唯一 PlatformRuntime Provider、GodotSDK 到 MiniGameSDK 的 Bridge ABI，以及精确身份发布门禁" />
     </picture>
   </a>
 </p>
 
-- **导出**：每次事务只选择微信、抖音或 TikTok Native 之一，解析一个完整引擎模板包，在目标目录之外装配，验证所有受管产物，再在锁内发布。
+- **导出**：每次事务只选择微信、抖音、TikTok Native 或 TapTap 之一，解析一个完整引擎模板包，在目标目录之外装配，验证所有受管产物，再在锁内发布。
 - **运行时**：`game.js` 只选择一个 `PlatformRuntime` Provider；Loader 启动修补后的引擎与 PCK，`GodotSDK` 和 `MiniGameSDK` 协商 Bridge ABI。
 
 发布过程支持进程内失败回滚并记录恢复证据，但它不是跨文件系统的 crash-atomic 原语。完整边界见[架构与版本管理](docs/ARCHITECTURE.md)。

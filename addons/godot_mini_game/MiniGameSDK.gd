@@ -1,5 +1,5 @@
 extends Node
-## Unified mini-game platform SDK (WeChat / Douyin / TikTok Native).
+## Unified mini-game platform SDK (WeChat / Douyin / TikTok Native / TapTap).
 ##
 ## Add as an autoload (singleton) named "MiniGameSDK".
 ## All async results are delivered via signals.

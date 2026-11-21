@@ -44,6 +44,20 @@ export const releaseData = {
         "devtoolCompile": "required",
         "realDevice": "required-for-release"
       }
+    },
+    "taptap": {
+      "runtimeType": "native",
+      "supportTier": "beta",
+      "apiNamespace": "tap",
+      "subpackageField": "subpackages",
+      "packageLimitsBytes": {
+        "total": 62914560
+      },
+      "validation": {
+        "exportSmoke": "automated",
+        "devtoolCompile": "manual",
+        "realDevice": "manual"
+      }
     }
   },
   "bundled": {
@@ -60,7 +74,8 @@ export const releaseData = {
     "platforms": {
       "wechat": "automated",
       "douyin": "automated",
-      "tiktok": "automated"
+      "tiktok": "automated",
+      "taptap": "automated"
     }
   },
   "certified": [
@@ -78,7 +93,8 @@ export const releaseData = {
       "platforms": {
         "wechat": "automated",
         "douyin": "automated",
-        "tiktok": "automated"
+        "tiktok": "automated",
+        "taptap": "automated"
       }
     },
     {
@@ -101,7 +117,8 @@ export const releaseData = {
       "platforms": {
         "wechat": "automated",
         "douyin": "automated",
-        "tiktok": "automated"
+        "tiktok": "automated",
+        "taptap": "automated"
       }
     },
     {
@@ -121,7 +138,8 @@ export const releaseData = {
       "platforms": {
         "wechat": "automated",
         "douyin": "automated",
-        "tiktok": "automated"
+        "tiktok": "automated",
+        "taptap": "automated"
       }
     }
   ]

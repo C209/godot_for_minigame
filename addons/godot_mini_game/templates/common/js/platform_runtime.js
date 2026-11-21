@@ -65,7 +65,9 @@ class PlatformProvider {
     const globalTtMinis = _objectOrNull(this.global.TTMinis);
     const tiktokApi = _objectOrNull(scopeTtMinis && scopeTtMinis.game)
       || _objectOrNull(globalTtMinis && globalTtMinis.game);
-    const tapApi = _objectOrNull(scope.tap);
+    // TapTap exposes `tap` globally. Mirror the TikTok fallback: a host that
+    // keeps its runtime API on GameGlobal must still be detected.
+    const tapApi = _objectOrNull(scope.tap) || _objectOrNull(this.global.tap);
 
     if (explicitPlatform === "wechat") {
       this.platform = "wechat";
@@ -175,6 +177,11 @@ class PlatformProvider {
       || _objectOrNull(this.global.WXWebAssembly);
     const ttWebAssembly = _objectOrNull(this.scope.TTWebAssembly)
       || _objectOrNull(this.global.TTWebAssembly);
+    // TapTap deliberately returns none here. Its native runtime exposes a
+    // standard `WebAssembly` object (confirmed on device), and the adapter's
+    // native shim rewrites ArrayBuffer instantiation into a file-path call.
+    // Adding the injected WXWebAssembly alias to this list would replace the
+    // working standard implementation with that path-based shim.
     const native = this.platform === "wechat"
       ? wxWebAssembly
       : this.platform === "douyin" || this.platform === "tiktok"

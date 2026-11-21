@@ -8,11 +8,13 @@ const PLATFORM_OPTIONS := [
 	["微信小游戏", "wechat"],
 	["抖音小游戏", "douyin"],
 	["TikTok Mini Game", "tiktok"],
+	["TapTap 小游戏", "taptap"],
 ]
 const PLATFORM_DISPLAY_NAMES := {
 	"wechat": "微信小游戏",
 	"douyin": "抖音小游戏",
 	"tiktok": "TikTok Mini Game",
+	"taptap": "TapTap 小游戏",
 }
 const ORIENTATION_OPTIONS := [
 	["竖屏 (portrait)", "portrait"],

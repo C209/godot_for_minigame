@@ -5,7 +5,8 @@
  * XMLHttpRequest / WebSocket / performance / location into the global scope
  * so Emscripten glue code and Godot Engine.js can run unmodified.
  *
- * Works on WeChat, Douyin, and TikTok through the shared PlatformRuntime provider.
+ * Works on WeChat, Douyin, TikTok, and TapTap through the shared PlatformRuntime
+ * provider.
  *
  * No build step required — this is a single self-contained ES module.
  */

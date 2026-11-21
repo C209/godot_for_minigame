@@ -1,0 +1,20 @@
+{
+  "description": "{{NAME}}",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "postcss": true,
+    "minified": true,
+    "newFeature": true,
+    "babelSetting": { "ignore": [], "disablePlugins": [], "outputPath": "" },
+    "enhance": true
+  },
+  "compileType": "game",
+  "libVersion": "3.5.1",
+  "appid": "{{APPID}}",
+  "projectname": "{{NAME}}",
+  "simulatorType": "wechat",
+  "condition": {},
+  "packOptions": { "ignore": [], "include": [] },
+  "editorSetting": { "tabIndent": "insertSpaces", "tabSize": 2 }
+}

@@ -12,6 +12,7 @@ on:
       - "scripts/**"
       - "test/**"
       - "support-matrix.json"
+      - ".gitattributes"
       - "project.godot"
       - ".github/workflows/*.yml"
   push:
@@ -330,6 +331,21 @@ jobs:
                 echo "TikTok JavaScript output contains forbidden eval(" >&2
                 exit 1
               fi
+              ;;
+            taptap)
+              test ! -e "$out/project.private.config.json"
+              jq -e '
+                has("subpackages") and
+                (.subpackages | type == "array" and length == 2) and
+                (has("subPackages") | not) and
+                .iOSHighPerformance == true and
+                .deviceOrientation == "portrait"
+              ' "$out/game.json" >/dev/null
+              jq -e '
+                (.appid | type == "string") and
+                .compileType == "game"
+              ' "$out/project.config.json" >/dev/null
+              grep -F 'PlatformRuntime.requirePlatform("taptap"' "$out/game.js"
               ;;
             *)
               echo "Unknown platform contract: ${{ matrix.platform }}" >&2
