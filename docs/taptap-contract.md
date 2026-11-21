@@ -20,8 +20,8 @@
 | 多线程 | 不支持（`System.Threading` 等价能力全部不可用） | 【确认】 |
 | 渲染 | 支持 WebGL2.0（=OpenGLES3.0）；WebGL1.0（=OpenGLES2.0）；**不支持 WebGPU** | 【确认】 |
 | WebAssembly | 支持（"启动阶段会进行 webassembly 编译"），wasm 为 JIT 代码 | 【确认】 |
-| WebAssembly 全局对象形态 | 官方只写「运行阶段提供 WebAssembly 基础能力」，未给全局名。Unity 的 wasm 加载/编译由团结容器 `UnityPlugin`（快适配插件，封闭）内部处理，`TJWASMSDK` 只是 Unity WASM↔小游戏 API 的 C ABI 桥（非 WASM 运行时）；**原生 tap 环境暴露标准 `WebAssembly`（ArrayBuffer 路径）还是类 `WXWebAssembly` 原生桥（仅文件路径）待真机确认** | 【待验证】← 头号风险 |
-| `canvas.getContext('webgl2')` | 文档只示例 `getContext('2d')`；WebGL2.0 支持是引擎适配页表述，原生 canvas API 是否直接给 webgl2 上下文 | 【待验证】 |
+| WebAssembly 全局对象形态 | **已实测确认（真机 dev 1.0.4，猫咪消消落）**：原生 tap 环境提供标准 `WebAssembly` 全局 + `instantiate` 可用；另注入 `WXWebAssembly` 原生桥（微信式，可作兜底）；`instantiateStreaming` 不可用（无 fetch Response，正常）。Godot 引擎 wasm 走标准 `WebAssembly.instantiate`，开箱即用，无需原生桥 | 【已确认】✅ |
+| `canvas.getContext('webgl2')` | **已实测确认**：`canvas.getContext('webgl')` 与 `getContext('webgl2')` 均返回非 null（离屏 canvas 也支持）。Godot 单线程 WebGL2 引擎可直接上屏 | 【已确认】✅ |
 | 内存 | Android 独立进程相对宽松；iOS 低档机 <1G，限制严 | 【确认】 |
 | 包体 | 整包 ≤60M（压缩后）；优秀参考 20M（接入指南）/ 10M（引擎建议页，两处口径不一，取 20M 为保守） | 【确认】 |
 | wasm 体积 | 建议 <10M，超了需 wasm 分包 | 【确认】 |
@@ -157,15 +157,19 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 | iOS 高性能字段 | `iOSHighPerformance(+`)` | — | — | `iOSHighPerformance` |
 | 分享 | `shareAppMessage` | `shareAppMessage` | `shareAppMessage` | **分享板** `showShareboard`/`onShareMessage` |
 | 成就/云存档/排行榜/对战/首页小组件 | 无 | 无 | 无 | **有**（平台特有） |
-| WASM 全局 | `WXWebAssembly` | `TTWebAssembly` | `TTWebAssembly` | 【待验证】 |
+| WASM 全局 | `WXWebAssembly` | `TTWebAssembly` | `TTWebAssembly` | 标准 `WebAssembly` ✅ + `WXWebAssembly`（实测） |
 | 支付 | `requestMidasPayment` | 抖币 | — | 虚拟支付 `requestPaymentGameItem`（服务端 goods-deliver-notify） |
 
-## 5. 头号待验证风险（Phase 0 未决，须真机/开发者工具）
+## 5. 风险清单（Phase 0 实测后更新）
 
-1. **WebAssembly 全局对象形态**：原生 `tap` 环境是暴露标准 `WebAssembly`（`instantiate(ArrayBuffer, imports)`，Emscripten 产物开箱即用），还是类 `WXWebAssembly`/`TTWebAssembly` 的原生桥（只收文件路径，需 adapter shim）？Godot 的 `adapter.js` 已有标准 `WebAssembly` + 原生桥双路径 patch，只需确认 TapTap 属于哪一种、原生桥全局名是什么（是否 `TapWebAssembly`/`TJWebAssembly`）。
-2. **`canvas.getContext('webgl2')`**：原生 tap canvas 是否直接给 webgl2 上下文（还是只有 2d）。
-3. **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现。
-4. **TapTap 开发者工具/真机调试/上传发布方式**：本机无 TapTap 开发者工具；官方指引是"上传到 TapTap 发布平台，扫码测试"。
+### 已解决（真机 dev 1.0.4 验证 ✅）
+1. **WebAssembly 全局形态**：原生 tap 环境提供**标准 `WebAssembly` + `instantiate`**（Emscripten 产物开箱即用），另有 `WXWebAssembly` 原生桥兜底。Godot 无需写原生 WASM 桥。
+2. **`canvas.getContext('webgl2')`**：`webgl` 与 `webgl2` 均可用（离屏 canvas 也支持）。Godot 单线程 WebGL2 引擎可上屏。
+3. **真机验证通道**：走 `taptap-cli` 上传开发测试包 + 后台扫码。**VS Code 插件「TapTap MiniGame Debugger」局域网调试对裸三件套有加载 bug（下载 zip 但不执行 game.js），不可用**。
+
+### 仍待验证
+- **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现（本次为 Android 真机，iOS 未测）。
+- **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
 
 ## 6. Phase 1 实现清单（改动面）
 
