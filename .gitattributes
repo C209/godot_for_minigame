@@ -1,0 +1,27 @@
+# Keep every checkout byte-identical across platforms. Without this, Windows
+# `core.autocrlf=true` rewrites text files to CRLF, which breaks the exporter's
+# multi-line godot.js patch anchors and the SHA-256 pins in engine/template.json.
+* text=auto eol=lf
+
+# Hash-pinned engine artifacts. The exporter verifies these bytes against
+# engine/template.json, so Git must never apply line-ending conversion to them.
+addons/godot_mini_game/engine/godot.js -text
+addons/godot_mini_game/engine/godot.wasm.br binary
+
+# Binary media, fonts, and archives are never text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.br binary
+*.wasm binary
