@@ -4505,6 +4505,22 @@ class GodotSDK {
     try {
       return await _fsCall(fs, "stat", { path });
     } catch (pathError) {
+      // Some hosts (TapTap) delegate stat to a Node-style fs, which needs a
+      // path string as the first argument instead of a WeChat options object.
+      if (/must be of type string|Invalid argument type|ERR_INVALID_ARG_TYPE/i
+        .test(String(pathError && pathError.message))) {
+        return await new Promise((resolve, reject) => {
+          try {
+            const maybe = fs.stat(path, (error, stats) => {
+              if (error) reject(error);
+              else resolve(stats || {});
+            });
+            if (maybe && typeof maybe.then === "function") maybe.then(resolve, reject);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      }
       try {
         // Older ByteDance host versions used `filePath` while current
         // TTMinis documentation uses `path` and returns `stats`.

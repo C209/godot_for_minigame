@@ -180,6 +180,8 @@ func _ready() -> void:
 		return
 	var candidate := JavaScriptBridge.get_interface(BRIDGE_GLOBAL_NAME)
 	if candidate == null:
+		# JavaScriptBridge.eval is compiled out of the release template, so the
+		# loader reports the registration targets instead (see [Loader] bridge scope).
 		_fail_bridge_initialization(
 			"Mini-game Bridge ABI %d (%s) is not available" % [
 				BRIDGE_ABI_VERSION, BRIDGE_GLOBAL_NAME])

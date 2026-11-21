@@ -153,15 +153,20 @@ async function testGameGlobalTapDetection() {
   assert.equal(PlatformRuntime.api, gameGlobalTapApi);
 }
 
-async function testTapKeepsTheStandardWebAssemblyPath() {
-  // TapTap injects WXWebAssembly too, but the provider must not advertise it:
-  // the adapter's native shim rewrites instantiate(ArrayBuffer) into a file-path
-  // call, which the standard WebAssembly object does not need.
+async function testTapUsesTheNativeWebAssemblyBridge() {
+  // TapTap ships the engine as godot.wasm.br. Standard WebAssembly cannot
+  // decompress Brotli, so the WeChat-compatible native bridge instantiates the
+  // file by path and must be advertised.
   const wxWebAssembly = { instantiate() {} };
   const { PlatformRuntime } = await loadRuntime({ tapApi: makeApi(), wxWebAssembly });
-  assert.deepEqual(PlatformRuntime.getNativeWebAssemblyApis(), []);
+  assert.deepEqual(PlatformRuntime.getNativeWebAssemblyApis(), [wxWebAssembly]);
   assert.equal(PlatformRuntime.capabilities.webAssembly, true);
-  assert.equal(PlatformRuntime.getStandardWebAssembly(), globalThis.WebAssembly);
+
+  // Without the bridge the provider still reports WASM support through the
+  // standard object; it just has no path-based loader.
+  const withoutBridge = await loadRuntime({ tapApi: makeApi() });
+  assert.deepEqual(withoutBridge.PlatformRuntime.getNativeWebAssemblyApis(), []);
+  assert.equal(withoutBridge.PlatformRuntime.capabilities.webAssembly, true);
 }
 
 async function testExplicitTapBreaksATie() {
@@ -177,18 +182,19 @@ async function testExplicitTapBreaksATie() {
   assert.equal(PlatformRuntime.api, tapApi);
 }
 
-async function testTapAutoDetectionLosesToWechatAndDouyin() {
-  // `tap` is the last automatic signal; WeChat/Douyin/TikTok must win ties.
+async function testTapAutoDetectionWinsOverCompatibilityAliases() {
+  // A TapTap host also exposes a WeChat compatibility layer (`wx`), so the
+  // specific `tap` namespace must win automatic detection.
   const tapApi = makeApi();
   const wxApi = makeApi();
-  const wxWins = await loadRuntime({ wxApi, tapApi });
-  assert.equal(wxWins.PlatformRuntime.platform, "wechat");
-  assert.equal(wxWins.PlatformRuntime.api, wxApi);
+  const wxTie = await loadRuntime({ wxApi, tapApi });
+  assert.equal(wxTie.PlatformRuntime.platform, "taptap");
+  assert.equal(wxTie.PlatformRuntime.api, tapApi);
 
   const ttApi = makeApi();
-  const ttWins = await loadRuntime({ ttApi, tapApi });
-  assert.equal(ttWins.PlatformRuntime.platform, "douyin");
-  assert.equal(ttWins.PlatformRuntime.api, ttApi);
+  const ttTie = await loadRuntime({ ttApi, tapApi });
+  assert.equal(ttTie.PlatformRuntime.platform, "taptap");
+  assert.equal(ttTie.PlatformRuntime.api, tapApi);
 }
 
 async function testTapRequireApiFailureMentionsTapTap() {
@@ -233,6 +239,7 @@ async function testMixedProvidersHaveStablePrecedence() {
   const wxApi = makeApi();
   const ttApi = makeApi();
   const tiktokApi = makeApi();
+  const tapApi = makeApi();
 
   const automatic = await loadRuntime({ wxApi, ttApi, tiktokApi });
   assert.equal(automatic.PlatformRuntime.platform, "tiktok");
@@ -241,6 +248,11 @@ async function testMixedProvidersHaveStablePrecedence() {
   const byteDanceOnly = await loadRuntime({ ttApi, tiktokApi });
   assert.equal(byteDanceOnly.PlatformRuntime.platform, "tiktok");
   assert.equal(byteDanceOnly.PlatformRuntime.api, tiktokApi);
+
+  // TapTap's compatibility layer exposes `wx` too; `tap` outranks every alias.
+  const withTap = await loadRuntime({ wxApi, ttApi, tiktokApi, tapApi });
+  assert.equal(withTap.PlatformRuntime.platform, "taptap");
+  assert.equal(withTap.PlatformRuntime.api, tapApi);
 
   const explicit = await loadRuntime({
     wxApi,
@@ -330,9 +342,9 @@ await testTiktokOnlyDetection();
 await testGameGlobalTiktokDetection();
 await testTapOnlyDetection();
 await testGameGlobalTapDetection();
-await testTapKeepsTheStandardWebAssemblyPath();
+await testTapUsesTheNativeWebAssemblyBridge();
 await testExplicitTapBreaksATie();
-await testTapAutoDetectionLosesToWechatAndDouyin();
+await testTapAutoDetectionWinsOverCompatibilityAliases();
 await testTapRequireApiFailureMentionsTapTap();
 await testNeitherProviderHasADescriptiveFailure();
 await testExplicitPlatformBreaksATwoProviderTie();

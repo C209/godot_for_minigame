@@ -85,9 +85,16 @@ class PlatformProvider {
       this.platform = "taptap";
       this.apiPrefix = "tap";
       this.api = tapApi || EMPTY_API;
+    } else if (tapApi) {
+      // TapTap runs a WeChat-compatibility layer that also exposes `wx` (and
+      // injects `WXWebAssembly`). Its specific `tap` namespace must therefore
+      // win every automatic tie with the compatibility aliases.
+      this.platform = "taptap";
+      this.apiPrefix = "tap";
+      this.api = tapApi;
     } else if (tiktokApi) {
       // TTMinis.game is a TikTok-specific signal. TikTok may also expose `wx`
-      // and `tt` compatibility aliases, so this must win every automatic tie.
+      // and `tt` compatibility aliases, so this must win the remaining ties.
       this.platform = "tiktok";
       this.apiPrefix = "TTMinis.game";
       this.api = tiktokApi;
@@ -99,11 +106,6 @@ class PlatformProvider {
       this.platform = "douyin";
       this.apiPrefix = "tt";
       this.api = ttApi;
-    } else if (tapApi) {
-      // `tap` is a TapTap-specific signal, independent of WeChat/Douyin/TikTok.
-      this.platform = "taptap";
-      this.apiPrefix = "tap";
-      this.api = tapApi;
     } else {
       this.platform = explicitPlatform;
       this.apiPrefix = "platform";
@@ -177,12 +179,13 @@ class PlatformProvider {
       || _objectOrNull(this.global.WXWebAssembly);
     const ttWebAssembly = _objectOrNull(this.scope.TTWebAssembly)
       || _objectOrNull(this.global.TTWebAssembly);
-    // TapTap deliberately returns none here. Its native runtime exposes a
-    // standard `WebAssembly` object (confirmed on device), and the adapter's
-    // native shim rewrites ArrayBuffer instantiation into a file-path call.
-    // Adding the injected WXWebAssembly alias to this list would replace the
-    // working standard implementation with that path-based shim.
-    const native = this.platform === "wechat"
+    // TapTap ships the engine as `godot.wasm.br`. Standard
+    // `WebAssembly.instantiate` cannot decompress Brotli, and the fetch
+    // polyfill deliberately answers `.wasm` requests with an empty stub
+    // because the native bridge reads the file by path. TapTap's runtime
+    // injects the WeChat-compatible `WXWebAssembly` bridge for exactly this
+    // (confirmed on device), so it must be advertised here.
+    const native = this.platform === "wechat" || this.platform === "taptap"
       ? wxWebAssembly
       : this.platform === "douyin" || this.platform === "tiktok"
         ? ttWebAssembly

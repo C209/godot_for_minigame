@@ -83,6 +83,13 @@ func _init() -> void:
 		var error := exporter._copy_platform_templates(
 			platform, output, "test-client-key", "landscape")
 		_assert_true(error == OK, "%s templates should render" % platform)
+		if platform == "taptap":
+			_assert_true(
+				exporter._copy_common_templates(output) == OK,
+				"TapTap output needs the shared runtime files")
+			_assert_true(
+				exporter._convert_taptap_modules_to_commonjs(output) == OK,
+				"TapTap runtime must convert to CommonJS")
 		var contract: Dictionary = Exporter.PLATFORM_CONTRACTS[platform]
 		var expected_contract: Dictionary = expected_contracts[platform]
 		_assert_true(
@@ -124,6 +131,67 @@ func _init() -> void:
 			exporter._validate_platform_configuration(output, platform) == OK,
 			"%s rendered configuration should validate" % platform,
 		)
+		if platform == "taptap":
+			var tap_entry := _read(output.path_join("game.js"))
+			_assert_true(
+				tap_entry.contains('require("./adapter.js");')
+				and tap_entry.contains('require("./js/loader.js").default;'),
+				"TapTap entry must use CommonJS requires",
+			)
+			var tap_sdk := _read(output.path_join("js/libs/sdk.js"))
+			_assert_true(
+				tap_sdk.contains('require("../platform_runtime.js")')
+				and tap_sdk.contains("exports.GodotSDK = GodotSDK;"),
+				"TapTap SDK must expose named CommonJS exports",
+			)
+			var tap_image_loader := _read(output.path_join("js/image_loader.js"))
+			_assert_true(
+				tap_image_loader.contains("exports.waitForImage = waitForImage;"),
+				"TapTap function exports must be registered",
+			)
+			for relative_path in Exporter.TAPTAP_COMMONJS_MODULES:
+				var syntax_output: Array = []
+				_assert_true(
+					OS.execute(
+						"node",
+						["--check", output.path_join(relative_path)],
+						syntax_output,
+						true,
+					) == 0,
+					"TapTap CommonJS output must parse: %s" % relative_path,
+				)
+			var require_output: Array = []
+			_assert_true(
+				OS.execute(
+					"node",
+					[
+						"-e",
+						"const m=require(process.argv[1]);"
+						+ "if(typeof m.PlatformRuntime!=='object')process.exit(1)",
+						output.path_join("js/platform_runtime.js"),
+					],
+					require_output,
+					true,
+				) == 0,
+				"converted platform_runtime.js must load through require",
+			)
+			var sdk_require_output: Array = []
+			_assert_true(
+				OS.execute(
+					"node",
+					[
+						"-e",
+						"globalThis.GameGlobal={};globalThis.tap={};"
+						+ "const m=require(process.argv[1]);"
+						+ "if(typeof m.GodotSDK!=='function'||typeof m.BRIDGE_GLOBAL_NAME!=='string')"
+						+ "process.exit(1)",
+						output.path_join("js/libs/sdk.js"),
+					],
+					sdk_require_output,
+					true,
+				) == 0,
+				"converted sdk.js must load its nested require and expose named exports",
+			)
 
 	var wrong_case := _root.path_join("templates-tiktok/game.json")
 	var wrong_config := _read_json(wrong_case)
@@ -184,6 +252,11 @@ func _init() -> void:
 		"godot_js_wrapper_interface_get:_godot_js_wrapper_interface_get",
 		"godot_js_wrapper_create_cb:_godot_js_wrapper_create_cb",
 		eval_neighbor,
+		"if(typeof GLctx.getSyncParameter!==\"function\")return;",
+		"if(typeof GLctx.fenceSync!==\"function\")return 0;",
+		"return ctx.destination.channelCount||2}",
+		"var scopes=[typeof window!==\"undefined\"?window:null",
+		"GodotDisplayScreen.desired_size=[width,height]",
 	]:
 		_assert_true(patched.contains(marker), "patched engine missing: %s" % marker)
 	_assert_true(

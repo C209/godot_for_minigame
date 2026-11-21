@@ -59,6 +59,23 @@ const COMMON_TEMPLATE_MAPPINGS := {
 	"js/worker/position_reporting.js": "js/worker/position_reporting.js",
 }
 
+## TapTap executes `game.js` as a classic script, so ES module syntax fails at
+## parse time ("Cannot use import statement outside a module"). The platform's
+## own Unity pipeline runs Babel (preset-env -> CommonJS) over the package,
+## which is why `require` is the supported module system there. The shared
+## templates stay ESM for the DevTools platforms; TapTap gets this mechanical
+## rewrite at export time, and the export fails closed if a module cannot be
+## converted safely.
+const TAPTAP_COMMONJS_MODULES: PackedStringArray = [
+	"adapter.js",
+	"fetch.js",
+	"game.js",
+	"js/image_loader.js",
+	"js/loader.js",
+	"js/libs/sdk.js",
+	"js/platform_runtime.js",
+]
+
 ## File / directory names this exporter owns inside the user's output dir.
 ## A validated staged copy replaces these transactionally; anything else in
 ## the destination (e.g. user-kept files) is left alone.
@@ -620,6 +637,13 @@ func _export_mini_game_impl(
 		_rm_rf(staging_dir)
 		return err
 
+	if platform == "taptap":
+		_log("  步骤 4b/7: 转换为 TapTap CommonJS 模块 ...")
+		err = _convert_taptap_modules_to_commonjs(staging_dir)
+		if err != OK:
+			_rm_rf(staging_dir)
+			return err
+
 	# Step 5: Create placeholder files for the subpackage structure declared in game.json.
 	# Both /engine and /subpacks are listed under the platform-specific subpackage
 	# field in game.json. Every root must contain an entry file. TikTok also rejects
@@ -1018,6 +1042,19 @@ func _validate_platform_configuration(
 		if godot_js.is_empty() or godot_js.contains("eval("):
 			_log("  [color=red]TikTok 产物中禁止 JavaScript eval()[/color]")
 			return ERR_INVALID_DATA
+	if platform == "taptap":
+		for relative_path in TAPTAP_COMMONJS_MODULES:
+			var module_text := _read_text(output_dir.path_join(relative_path))
+			if module_text.is_empty():
+				_log("  [color=red]TapTap 运行时模块缺失: %s[/color]" % relative_path)
+				return ERR_FILE_NOT_FOUND
+			for module_line in module_text.split("\n"):
+				var statement := module_line.strip_edges()
+				if statement.begins_with("import ") or statement.begins_with("export "):
+					_log(
+						"  [color=red]TapTap 产物仍含 ES Module 语法: %s[/color]"
+						% relative_path)
+					return ERR_INVALID_DATA
 	return OK
 
 
@@ -1637,13 +1674,52 @@ func _patch_godot_js(path: String, platform: String = "wechat") -> Error:
 	# 1) canvas may be null if findCanvasEventTarget fails (no DOM IDs)
 	# 2) getContext may fail on second call (context limit)
 	# 3) Fall back to cached context or GameGlobal.canvas
+	# 4) TapTap never resolves the offscreen back buffer's final blit, so its
+	#    engine must draw to the default framebuffer and keep it readable.
+	#    WeChat, Douyin and TikTok keep Godot's requested attributes untouched.
 	var _gl_create_old := "createContext:(canvas,webGLContextAttributes)=>{if(webGLContextAttributes.renderViaOffscreenBackBuffer)webGLContextAttributes[\"preserveDrawingBuffer\"]=true;var ctx=webGLContextAttributes.majorVersion>1?canvas.getContext(\"webgl2\",webGLContextAttributes):canvas.getContext(\"webgl\",webGLContextAttributes);if(!ctx)return 0;var handle=GL.registerContext(ctx,webGLContextAttributes);return handle}"
-	var _gl_create_new := "createContext:(canvas,webGLContextAttributes)=>{if(!canvas&&typeof GameGlobal!==\"undefined\")canvas=GameGlobal.canvas;if(!canvas){console.error(\"[GL] no canvas\");return 0}var type=webGLContextAttributes.majorVersion>1?\"webgl2\":\"webgl\";console.log(\"[GL.createContext] type=\"+type);var ctx=canvas.getContext(type,webGLContextAttributes);if(!ctx)ctx=canvas.getContext(type);if(!ctx&&canvas.__glctx)ctx=canvas.__glctx;if(!ctx&&typeof GameGlobal!==\"undefined\"&&GameGlobal.canvas&&GameGlobal.canvas!==canvas){ctx=GameGlobal.canvas.getContext(type,webGLContextAttributes)||GameGlobal.canvas.getContext(type);canvas=GameGlobal.canvas}if(!ctx){console.error(\"[GL] getContext failed\");return 0}canvas.__glctx=ctx;console.log(\"[GL.createContext] OK\");var handle=GL.registerContext(ctx,webGLContextAttributes);return handle}"
+	var _gl_attributes_fix := ""
+	if platform == "taptap":
+		_gl_attributes_fix = "webGLContextAttributes.renderViaOffscreenBackBuffer=false;webGLContextAttributes[\"preserveDrawingBuffer\"]=true;"
+	var _gl_create_new := "createContext:(canvas,webGLContextAttributes)=>{if(!canvas&&typeof GameGlobal!==\"undefined\")canvas=GameGlobal.canvas;if(!canvas){console.error(\"[GL] no canvas\");return 0}var type=webGLContextAttributes.majorVersion>1?\"webgl2\":\"webgl\";console.log(\"[GL.createContext] type=\"+type+\" offscreenBackBuffer=\"+!!webGLContextAttributes.renderViaOffscreenBackBuffer);" + _gl_attributes_fix + "var ctx=canvas.getContext(type,webGLContextAttributes);if(!ctx)ctx=canvas.getContext(type);if(!ctx&&canvas.__glctx)ctx=canvas.__glctx;if(!ctx&&typeof GameGlobal!==\"undefined\"&&GameGlobal.canvas&&GameGlobal.canvas!==canvas){ctx=GameGlobal.canvas.getContext(type,webGLContextAttributes)||GameGlobal.canvas.getContext(type);canvas=GameGlobal.canvas}if(!ctx){console.error(\"[GL] getContext failed\");return 0}canvas.__glctx=ctx;console.log(\"[GL.createContext] OK\");var handle=GL.registerContext(ctx,webGLContextAttributes);return handle}"
 	if content.find(_gl_create_old) != -1:
 		content = content.replace(_gl_create_old, _gl_create_new)
 		modified = true
 	elif content.find(_gl_create_new) == -1:
 		_log("  [color=red]godot.js 缺少 GL.createContext 兼容补丁锚点[/color]")
+		return ERR_FILE_CORRUPT
+
+	# WebGL2 sync objects are optional on mini-game hosts. TapTap's context
+	# implements neither getSyncParameter nor fenceSync, and Emscripten calls
+	# them unguarded — Godot startup died with
+	# "TypeError: GLctx.getSyncParameter is not a function". Guard the three
+	# entry points; hosts that implement sync objects keep the exact upstream
+	# path because the guards only fire when the method is absent.
+	var _sync_get_old := "var _glGetSynciv=(sync,pname,bufSize,length,values)=>{if(bufSize<0){GL.recordError(1281);return}if(!values){GL.recordError(1281);return}var ret=GLctx.getSyncParameter(GL.syncs[sync],pname);if(ret!==null){HEAP32[values>>2]=ret;if(length)HEAP32[length>>2]=1}};"
+	var _sync_get_new := "var _glGetSynciv=(sync,pname,bufSize,length,values)=>{if(bufSize<0){GL.recordError(1281);return}if(!values){GL.recordError(1281);return}if(typeof GLctx.getSyncParameter!==\"function\")return;var ret=GLctx.getSyncParameter(GL.syncs[sync],pname);if(ret!==null){HEAP32[values>>2]=ret;if(length)HEAP32[length>>2]=1}};"
+	if content.find(_sync_get_old) != -1:
+		content = content.replace(_sync_get_old, _sync_get_new)
+		modified = true
+	elif content.find(_sync_get_new) == -1:
+		_log("  [color=red]godot.js 缺少 WebGL2 sync 查询补丁锚点[/color]")
+		return ERR_FILE_CORRUPT
+
+	var _sync_fence_old := "var _glFenceSync=(condition,flags)=>{var sync=GLctx.fenceSync(condition,flags);if(sync){var id=GL.getNewId(GL.syncs);sync.name=id;GL.syncs[id]=sync;return id}return 0};"
+	var _sync_fence_new := "var _glFenceSync=(condition,flags)=>{if(typeof GLctx.fenceSync!==\"function\")return 0;var sync=GLctx.fenceSync(condition,flags);if(sync){var id=GL.getNewId(GL.syncs);sync.name=id;GL.syncs[id]=sync;return id}return 0};"
+	if content.find(_sync_fence_old) != -1:
+		content = content.replace(_sync_fence_old, _sync_fence_new)
+		modified = true
+	elif content.find(_sync_fence_new) == -1:
+		_log("  [color=red]godot.js 缺少 WebGL2 fence 补丁锚点[/color]")
+		return ERR_FILE_CORRUPT
+
+	var _sync_delete_old := "var _glDeleteSync=id=>{if(!id)return;var sync=GL.syncs[id];if(!sync){GL.recordError(1281);return}GLctx.deleteSync(sync);sync.name=0;GL.syncs[id]=null};"
+	var _sync_delete_new := "var _glDeleteSync=id=>{if(!id)return;var sync=GL.syncs[id];if(!sync){GL.recordError(1281);return}if(typeof GLctx.deleteSync===\"function\"){GLctx.deleteSync(sync);sync.name=0}GL.syncs[id]=null};"
+	if content.find(_sync_delete_old) != -1:
+		content = content.replace(_sync_delete_old, _sync_delete_new)
+		modified = true
+	elif content.find(_sync_delete_new) == -1:
+		_log("  [color=red]godot.js 缺少 WebGL2 sync 释放补丁锚点[/color]")
 		return ERR_FILE_CORRUPT
 
 	# Neutralize connectPositionWorklet — the position-reporting AudioWorkletNode
@@ -1656,6 +1732,159 @@ func _patch_godot_js(path: String, platform: String = "wechat") -> Error:
 		modified = true
 	elif content.find(_cpw_new) == -1:
 		_log("  [color=red]godot.js 缺少 AudioWorklet 兼容补丁锚点[/color]")
+		return ERR_FILE_CORRUPT
+
+	# JavaScriptBridge.get_interface only looks at window[name]. Mini-game hosts
+	# disagree about which object the engine's `window` binding is: TapTap keeps
+	# the bridge on GameGlobal/globalThis while the engine resolves a different
+	# window object, so the interface stays invisible. Accept every scope the
+	# adapter registers on.
+	#
+	# Some release templates (Godot 4.7 with javascript_eval=no) ship without the
+	# JS wrapper library at all, so the anchor is legitimately absent there; the
+	# bridge is unavailable on those templates regardless of this patch.
+	var _bridge_lookup_old := "function _godot_js_wrapper_interface_get(p_name){const name=GodotRuntime.parseString(p_name);if(typeof window[name]!==\"undefined\"){return GodotJSWrapper.get_proxied(window[name])}return 0}"
+	var _bridge_lookup_new := "function _godot_js_wrapper_interface_get(p_name){const name=GodotRuntime.parseString(p_name);var scopes=[typeof window!==\"undefined\"?window:null,typeof GameGlobal!==\"undefined\"?GameGlobal:null,typeof globalThis!==\"undefined\"?globalThis:null];for(var i=0;i<scopes.length;i++){var scope=scopes[i];if(scope&&typeof scope[name]!==\"undefined\"){return GodotJSWrapper.get_proxied(scope[name])}}return 0}"
+	if content.find(_bridge_lookup_old) != -1:
+		content = content.replace(_bridge_lookup_old, _bridge_lookup_new)
+		modified = true
+	elif content.find(_bridge_lookup_new) == -1:
+		_log("  [color=yellow]godot.js 不含 JS Bridge 库（eval-free 模板），跳过 bridge 作用域补丁[/color]")
+
+	if platform == "taptap":
+		# Diagnostic: Godot picks the Web audio backend from these two probes and
+		# from the channel count returned by _godot_audio_init.
+		var _audio_probe_old := "function _godot_audio_has_script_processor(){return GodotAudio.ctx&&GodotAudio.ctx.createScriptProcessor?1:0}"
+		var _audio_probe_new := "function _godot_audio_has_script_processor(){var r=GodotAudio.ctx&&GodotAudio.ctx.createScriptProcessor?1:0;console.log(\"[Audio] has_script_processor=\"+r+\", ctx=\"+(GodotAudio.ctx?\"yes\":\"no\")+\", state=\"+(GodotAudio.ctx?GodotAudio.ctx.state:\"-\"));return r}"
+		if content.find(_audio_probe_old) != -1:
+			content = content.replace(_audio_probe_old, _audio_probe_new)
+			modified = true
+		elif content.find(_audio_probe_new) == -1:
+			_log("  [color=yellow]godot.js 不含音频探测锚点，跳过[/color]")
+
+		var _audio_init_old := "const channels=GodotAudio.init(mix_rate,p_latency,statechange,latencyupdate);GodotRuntime.setHeapValue(p_mix_rate,GodotAudio.ctx.sampleRate,\"i32\");return channels}"
+		var _audio_init_new := "const channels=GodotAudio.init(mix_rate,p_latency,statechange,latencyupdate);console.log(\"[Audio] init channels=\"+channels+\", sampleRate=\"+(GodotAudio.ctx&&GodotAudio.ctx.sampleRate));GodotRuntime.setHeapValue(p_mix_rate,GodotAudio.ctx.sampleRate,\"i32\");return channels}"
+		if content.find(_audio_init_old) != -1:
+			content = content.replace(_audio_init_old, _audio_init_new)
+			modified = true
+		elif content.find(_audio_init_new) == -1:
+			_log("  [color=yellow]godot.js 不含音频初始化锚点，跳过[/color]")
+
+		var _audio_script_old := "function _godot_audio_script_create(buffer_length,channel_count){const buf_len=GodotRuntime.getHeapValue(buffer_length,\"i32\");try{const out_len=GodotAudioScript.create(buf_len,channel_count);GodotRuntime.setHeapValue(buffer_length,out_len,\"i32\")}catch(e){GodotRuntime.error(\"Error starting AudioDriverScriptProcessor\",e);return 1}return 0}"
+		var _audio_script_new := "function _godot_audio_script_create(buffer_length,channel_count){const buf_len=GodotRuntime.getHeapValue(buffer_length,\"i32\");console.log(\"[Audio] script_create buf=\"+buf_len+\", ch=\"+channel_count);try{const out_len=GodotAudioScript.create(buf_len,channel_count);console.log(\"[Audio] script_create ok, out_len=\"+out_len+\", node=\"+(GodotAudioScript.script?\"yes\":\"null\"));GodotRuntime.setHeapValue(buffer_length,out_len,\"i32\")}catch(e){console.log(\"[Audio] script_create threw: \"+e);GodotRuntime.error(\"Error starting AudioDriverScriptProcessor\",e);return 1}return 0}"
+		if content.find(_audio_script_old) != -1:
+			content = content.replace(_audio_script_old, _audio_script_new)
+			modified = true
+		elif content.find(_audio_script_new) == -1:
+			_log("  [color=yellow]godot.js 不含 script_create 锚点，跳过[/color]")
+
+		var _audio_script_ret_old := "GodotAudio.driver=GodotAudioScript;return GodotAudioScript.script.bufferSize}"
+		var _audio_script_ret_new := "GodotAudio.driver=GodotAudioScript;return GodotAudioScript.script.bufferSize||buffer_length}"
+		if content.find(_audio_script_ret_old) != -1:
+			content = content.replace(_audio_script_ret_old, _audio_script_ret_new)
+			modified = true
+		elif content.find(_audio_script_ret_new) == -1:
+			_log("  [color=yellow]godot.js 不含 script_create 返回值锚点，跳过[/color]")
+
+		# Some hosts never run the ScriptProcessor graph when it is wired straight
+		# to the destination. Try a stereo-input node routed through a gain stage.
+		var _script_node_old := "GodotAudioScript.script=GodotAudio.ctx.createScriptProcessor(buffer_length,2,channel_count);"
+		var _script_node_new := "GodotAudioScript.script=GodotAudio.ctx.createScriptProcessor(buffer_length,2,2);"
+		if content.find(_script_node_old) != -1:
+			content = content.replace(_script_node_old, _script_node_new)
+			modified = true
+		elif content.find(_script_node_new) == -1:
+			_log("  [color=yellow]godot.js 不含 ScriptProcessor 节点锚点，跳过[/color]")
+
+		var _script_connect_old := "GodotAudioScript.script.connect(GodotAudio.ctx.destination)}"
+		var _script_connect_new := "try{var _aud_gain=GodotAudio.ctx.createGain();GodotAudioScript.script.connect(_aud_gain);_aud_gain.connect(GodotAudio.ctx.destination);if(GodotAudio.ctx.state!==\"running\"&&GodotAudio.ctx.resume)GodotAudio.ctx.resume()}catch(_aud_err){console.log(\"[Audio] gain hop failed: \"+_aud_err);GodotAudioScript.script.connect(GodotAudio.ctx.destination)}}"
+		if content.find(_script_connect_old) != -1:
+			content = content.replace(_script_connect_old, _script_connect_new)
+			modified = true
+		elif content.find(_script_connect_new) == -1:
+			_log("  [color=yellow]godot.js 不含 ScriptProcessor 连接锚点，跳过[/color]")
+
+		var _audio_start_old := "function _godot_audio_script_start(p_in_buf,p_in_size,p_out_buf,p_out_size,p_cb){const onprocess=GodotRuntime.get_func(p_cb);GodotAudioScript.start(p_in_buf,p_in_size,p_out_buf,p_out_size,onprocess)}"
+		var _audio_start_new := "function _godot_audio_script_start(p_in_buf,p_in_size,p_out_buf,p_out_size,p_cb){const onprocess=GodotRuntime.get_func(p_cb);console.log(\"[Audio] script_start called\");try{var counted=function(){GodotAudioScript._callbacks=(GodotAudioScript._callbacks||0)+1;onprocess()};GodotAudioScript.start(p_in_buf,p_in_size,p_out_buf,p_out_size,counted);console.log(\"[Audio] script_start ok\");setTimeout(function(){console.log(\"[Audio] onaudioprocess callbacks=\"+(GodotAudioScript._callbacks||0))},3000)}catch(e){console.log(\"[Audio] script_start threw: \"+e)}}"
+		if content.find(_audio_start_old) != -1:
+			content = content.replace(_audio_start_old, _audio_start_new)
+			modified = true
+		elif content.find(_audio_start_new) == -1:
+			_log("  [color=yellow]godot.js 不含 script_start 锚点，跳过[/color]")
+
+		# Diagnostic: the C++ side passes the window size it believes it has.
+		var _setup_canvas_old := "function _godot_js_display_setup_canvas(p_width,p_height,p_fullscreen,p_hidpi){const canvas=GodotConfig.canvas;"
+		var _setup_canvas_new := "function _godot_js_display_setup_canvas(p_width,p_height,p_fullscreen,p_hidpi){const canvas=GodotConfig.canvas;console.log(\"[Display] setup_canvas requested=\"+p_width+\"x\"+p_height+\", canvas=\"+canvas.width+\"x\"+canvas.height+\", policy=\"+GodotConfig.canvas_resize_policy+\", dpr=\"+GodotDisplayScreen.getPixelRatio()+\", inner=\"+window.innerWidth+\"x\"+window.innerHeight);"
+		if content.find(_setup_canvas_old) != -1:
+			content = content.replace(_setup_canvas_old, _setup_canvas_new)
+			modified = true
+		elif content.find(_setup_canvas_new) == -1:
+			_log("  [color=yellow]godot.js 不含 setup_canvas 锚点，跳过[/color]")
+
+		# Godot clamps the root Window to the reported screen size. TapTap's host
+		# window may report a zero screen height, which collapses the window (and
+		# therefore the render viewport) to zero height. Fall back to the canvas
+		# dimensions whenever the screen value is missing or not positive.
+		var _screen_size_old := "function _godot_js_display_screen_size_get(width,height){const scale=GodotDisplayScreen.getPixelRatio();GodotRuntime.setHeapValue(width,window.screen.width*scale,\"i32\");GodotRuntime.setHeapValue(height,window.screen.height*scale,\"i32\")}"
+		var _screen_size_new := "function _godot_js_display_screen_size_get(width,height){const scale=GodotDisplayScreen.getPixelRatio();var sw=window.screen&&window.screen.width?window.screen.width*scale:GodotConfig.canvas.width;var sh=window.screen&&window.screen.height?window.screen.height*scale:GodotConfig.canvas.height;console.log(\"[Display] screen_size_get -> \"+sw+\"x\"+sh+\" (screen=\"+(window.screen?window.screen.width+\"x\"+window.screen.height:\"none\")+\", canvas=\"+GodotConfig.canvas.width+\"x\"+GodotConfig.canvas.height+\")\");GodotRuntime.setHeapValue(width,sw|0,\"i32\");GodotRuntime.setHeapValue(height,sh|0,\"i32\")}"
+		if content.find(_screen_size_old) != -1:
+			content = content.replace(_screen_size_old, _screen_size_new)
+			modified = true
+		elif content.find(_screen_size_new) == -1:
+			_log("  [color=yellow]godot.js 不含 screen_size_get 锚点，跳过[/color]")
+
+		# Force the no-resize policy at the source: the engine must treat the
+		# adapter-provided canvas as authoritative instead of recomputing it from
+		# window.innerWidth/Height (which freezes the root Window at zero height).
+		var _policy_default_old := "var GodotConfig={canvas:null,locale:\"en\",canvas_resize_policy:2,"
+		var _policy_default_new := "var GodotConfig={canvas:null,locale:\"en\",canvas_resize_policy:0,"
+		if content.find(_policy_default_old) != -1:
+			content = content.replace(_policy_default_old, _policy_default_new)
+			modified = true
+		var _policy_init_old := "GodotConfig.canvas_resize_policy=p_opts[\"canvasResizePolicy\"];"
+		var _policy_init_new := "GodotConfig.canvas_resize_policy=p_opts[\"canvasResizePolicy\"]!==undefined?p_opts[\"canvasResizePolicy\"]:0;"
+		if content.find(_policy_init_old) != -1:
+			content = content.replace(_policy_init_old, _policy_init_new)
+			modified = true
+
+		# Diagnostic: the root Window is created from the value this function
+		# returns, so log every read with the canvas and resize policy state.
+		var _size_get_old := "function _godot_js_display_window_size_get(p_width,p_height){GodotRuntime.setHeapValue(p_width,GodotConfig.canvas.width,\"i32\");GodotRuntime.setHeapValue(p_height,GodotConfig.canvas.height,\"i32\")}"
+		var _size_get_new := "function _godot_js_display_window_size_get(p_width,p_height){console.log(\"[Display] window_size_get -> \"+(GodotConfig.canvas?GodotConfig.canvas.width+\"x\"+GodotConfig.canvas.height:\"no-canvas\")+\", ptrs=\"+p_width+\",\"+p_height+\", policy=\"+GodotConfig.canvas_resize_policy);GodotRuntime.setHeapValue(p_width,GodotConfig.canvas.width,\"i32\");GodotRuntime.setHeapValue(p_height,GodotConfig.canvas.height,\"i32\");console.log(\"[Display]   heap now=\"+GodotRuntime.getHeapValue(p_width,\"i32\")+\"x\"+GodotRuntime.getHeapValue(p_height,\"i32\"))}"
+		if content.find(_size_get_old) != -1:
+			content = content.replace(_size_get_old, _size_get_new)
+			modified = true
+		elif content.find(_size_get_new) == -1:
+			_log("  [color=yellow]godot.js 不含 window_size_get 诊断锚点，跳过[/color]")
+
+	# The mini-game adapter sizes the canvas before the engine starts, so
+	# GodotDisplayScreen.updateSize() takes its "nothing to do" branch and never
+	# records desired_size. The window then reports 0x0: the render viewport
+	# collapses to zero height (black frame) and input coordinates map through a
+	# zero-size window, so taps never reach the scene.
+	var _desired_size_old := "if(isFullscreen||wantsFullWindow){width=Math.floor(window.innerWidth*scale);height=Math.floor(window.innerHeight*scale)}"
+	var _desired_size_new := "if(isFullscreen||wantsFullWindow){width=Math.floor(window.innerWidth*scale);height=Math.floor(window.innerHeight*scale);if(width>0&&height>0){GodotDisplayScreen.desired_size=[width,height]}}"
+	if content.find(_desired_size_old) != -1:
+		content = content.replace(_desired_size_old, _desired_size_new)
+		modified = true
+	elif content.find(_desired_size_new) == -1:
+		_log("  [color=red]godot.js 缺少窗口尺寸补丁锚点[/color]")
+		return ERR_FILE_CORRUPT
+
+	# Mini-game hosts may omit destination.channelCount (TapTap returns
+	# undefined). Godot's WebAudio driver interprets a missing channel count as
+	# a failed driver and falls back to the dummy one, so default to stereo.
+	var _audio_channels_old := (
+		"GodotAudio.audioPositionWorkletPromise=ctx.audioWorklet.addModule(path);"
+		+ "return ctx.destination.channelCount}")
+	var _audio_channels_new := (
+		"GodotAudio.audioPositionWorkletPromise=ctx.audioWorklet.addModule(path);"
+		+ "return ctx.destination.channelCount||2}")
+	if content.find(_audio_channels_old) != -1:
+		content = content.replace(_audio_channels_old, _audio_channels_new)
+		modified = true
+	elif content.find(_audio_channels_new) == -1:
+		_log("  [color=red]godot.js 缺少音频声道数补丁锚点[/color]")
 		return ERR_FILE_CORRUPT
 
 	# Mini-game hosts have no AudioWorklet. The adapter only stubs
@@ -1997,6 +2226,189 @@ func _copy_platform_templates(
 		if err != OK:
 			return err
 	return OK
+
+
+# ─── Step 4b: TapTap CommonJS conversion ──────────────────────────
+
+func _convert_taptap_modules_to_commonjs(output_dir: String) -> Error:
+	if not SUPPORTED_PLATFORMS.has("taptap"):
+		return ERR_INVALID_PARAMETER
+	for relative_path in TAPTAP_COMMONJS_MODULES:
+		var path := output_dir.path_join(relative_path)
+		var source := _read_text(path)
+		if source.is_empty():
+			_log("[color=red]缺少待转换的运行时模块: %s[/color]" % relative_path)
+			return ERR_FILE_NOT_FOUND
+		var converted := _esm_module_to_commonjs(source, relative_path)
+		if converted.is_empty():
+			return ERR_INVALID_DATA
+		var err := _write_text(path, converted)
+		if err != OK:
+			return err
+	_log("  已转换为 TapTap 可执行的 CommonJS 模块 (%d 个)" % TAPTAP_COMMONJS_MODULES.size())
+	return OK
+
+
+## Rewrites the static ESM surface this project uses into the CommonJS shape
+## Babel would emit: side-effect imports become require(), named imports become
+## destructuring requires, `export default x` becomes module.exports.default,
+## and named exports become `exports.name = name` assignments. Anything outside
+## that surface fails the export instead of shipping unparsable JavaScript.
+func _esm_module_to_commonjs(source: String, label: String) -> String:
+	var lines := source.split("\n")
+	var output := PackedStringArray()
+	var deferred_exports := PackedStringArray()
+	var index := 0
+	while index < lines.size():
+		var line: String = lines[index]
+		var trimmed := line.strip_edges()
+		if trimmed.begins_with("import "):
+			var statement := line
+			var guard := 0
+			while (
+				statement.find(" from ") == -1
+				and not statement.strip_edges().ends_with(";")
+				and index + 1 < lines.size()
+			):
+				index += 1
+				guard += 1
+				statement += " " + lines[index].strip_edges()
+				if guard > 32:
+					return _commonjs_conversion_error(label, "import 语句跨度异常")
+			var rewritten := _rewrite_esm_import(statement)
+			if rewritten.is_empty():
+				return _commonjs_conversion_error(
+					label, "无法识别的 import 语句: %s" % statement.strip_edges())
+			output.append(rewritten)
+		elif trimmed.begins_with("export default "):
+			var expression := trimmed.substr("export default ".length()).strip_edges()
+			if expression.ends_with(";"):
+				expression = expression.substr(0, expression.length() - 1)
+			if (
+				expression.is_empty()
+				or expression.contains("{")
+				or expression.begins_with("class ")
+				or expression.begins_with("function ")
+			):
+				return _commonjs_conversion_error(
+					label, "不支持的 export default 形式: %s" % trimmed)
+			output.append("module.exports.default = %s;" % expression)
+		elif trimmed.begins_with("export {"):
+			var inline_names := trimmed.substr("export {".length())
+			var closing := inline_names.find("}")
+			if closing != -1:
+				for name in inline_names.substr(0, closing).split(","):
+					var clean := name.strip_edges()
+					if not clean.is_empty():
+						output.append("exports.%s = %s;" % [clean, clean])
+			else:
+				index += 1
+				var closed := false
+				while index < lines.size():
+					var inner := lines[index].strip_edges()
+					if inner.begins_with("}"):
+						closed = true
+						break
+					for name in inner.split(","):
+						var clean := name.strip_edges()
+						if not clean.is_empty():
+							output.append("exports.%s = %s;" % [clean, clean])
+					index += 1
+				if not closed:
+					return _commonjs_conversion_error(label, "export 列表没有结束")
+		elif (
+			trimmed.begins_with("export function ")
+			or trimmed.begins_with("export const ")
+			or trimmed.begins_with("export let ")
+			or trimmed.begins_with("export class ")
+		):
+			var declaration := trimmed.substr("export ".length())
+			var name := _esm_declared_name(declaration)
+			if name.is_empty():
+				return _commonjs_conversion_error(
+					label, "无法识别导出名称: %s" % trimmed)
+			output.append(declaration)
+			deferred_exports.append("exports.%s = %s;" % [name, name])
+		elif trimmed.begins_with("export "):
+			return _commonjs_conversion_error(
+				label, "不支持的 export 语句: %s" % trimmed)
+		else:
+			output.append(line)
+		index += 1
+	for statement in deferred_exports:
+		output.append(statement)
+	var converted := "\n".join(output)
+	for line in converted.split("\n"):
+		var trimmed := line.strip_edges()
+		if trimmed.begins_with("import ") or trimmed.begins_with("export "):
+			return _commonjs_conversion_error(
+				label, "转换后仍残留 ES Module 语法: %s" % trimmed)
+	return converted
+
+
+func _commonjs_conversion_error(label: String, message: String) -> String:
+	_log("[color=red]TapTap CommonJS 转换失败 (%s): %s[/color]" % [label, message])
+	return ""
+
+
+func _rewrite_esm_import(statement: String) -> String:
+	var text := statement.strip_edges()
+	if text.ends_with(";"):
+		text = text.substr(0, text.length() - 1).strip_edges()
+	var from_index := text.find(" from ")
+	if from_index == -1:
+		var side_effect := text.substr("import".length()).strip_edges()
+		var side_specifier := _esm_string_literal(side_effect)
+		if side_specifier.is_empty():
+			return ""
+		return "require(\"%s\");" % _esm_module_path(side_specifier)
+	var clause := text.substr("import".length(), from_index - "import".length()).strip_edges()
+	var specifier := _esm_string_literal(text.substr(from_index + " from ".length()))
+	if specifier.is_empty():
+		return ""
+	var target := _esm_module_path(specifier)
+	if clause.begins_with("{"):
+		var names := clause.substr(1, clause.length() - 2).strip_edges()
+		if names.is_empty():
+			return ""
+		return "const { %s } = require(\"%s\");" % [names, target]
+	if clause.begins_with("*"):
+		var namespace_name := clause.replace("*", "").replace("as", "").strip_edges()
+		if not namespace_name.is_valid_identifier():
+			return ""
+		return "const %s = require(\"%s\");" % [namespace_name, target]
+	if not clause.is_valid_identifier():
+		return ""
+	return "const %s = require(\"%s\").default;" % [clause, target]
+
+
+func _esm_string_literal(value: String) -> String:
+	var text := value.strip_edges()
+	if text.length() < 2:
+		return ""
+	var quote := text.substr(0, 1)
+	if quote != "\"" and quote != "'":
+		return ""
+	return text.substr(1, text.length() - 2)
+
+
+func _esm_module_path(specifier: String) -> String:
+	return specifier if specifier.ends_with(".js") else specifier + ".js"
+
+
+func _esm_declared_name(declaration: String) -> String:
+	var rest := declaration
+	for prefix in ["function ", "const ", "let ", "class "]:
+		if rest.begins_with(prefix):
+			rest = rest.substr(prefix.length())
+			break
+	var name := ""
+	for index in rest.length():
+		var character := rest[index]
+		if character == "(" or character == "=" or character == " " or character == ":":
+			break
+		name += character
+	return name if name.is_valid_identifier() else ""
 
 
 # ─── File utilities ────────────────────────────────────────────────

@@ -86,13 +86,23 @@ function installTapGlobals() {
     loadSubpackage(options) { options.success(); },
   };
   globalThis.tap = api;
-  // The TapTap host also injects a WeChat-compatible native WASM bridge. It must
-  // stay unused: the provider relies on the standard WebAssembly object, so the
-  // adapter must not install its ArrayBuffer→file-path shim.
+  // The TapTap host also runs a WeChat-compatibility layer that exposes `wx`
+  // next to `tap`. The provider must still resolve to taptap, and it must not
+  // pick up the WeChat native WASM shim through that alias.
+  globalThis.wx = {
+    createCanvas: makeCanvas,
+    getStorageSync() { return null; },
+    getStorageInfoSync() {
+      throw new Error("TapTap must not route through the wx compatibility alias");
+    },
+  };
+  // The TapTap host also injects a WeChat-compatible native WASM bridge. The
+  // engine ships as godot.wasm.br, which standard WebAssembly cannot decompress,
+  // so this bridge must be selected and installed as the WebAssembly shim.
   globalThis.WXWebAssembly = {
     instantiate() {
       nativeInstantiateCalls += 1;
-      throw new Error("TapTap must not route WASM through WXWebAssembly");
+      throw new Error("native instantiate is not exercised during import");
     },
   };
   return {
@@ -114,12 +124,20 @@ async function testTapAdapterFetchLoaderAndSdkImports() {
 
   assert.equal(globalThis.GameGlobal.PlatformRuntime.platform, "taptap");
   assert.equal(globalThis.GameGlobal.PlatformRuntime.apiPrefix, "tap");
-  assert.deepEqual(globalThis.GameGlobal.PlatformRuntime.getNativeWebAssemblyApis(), []);
+  assert.deepEqual(
+    globalThis.GameGlobal.PlatformRuntime.getNativeWebAssemblyApis(),
+    [globalThis.WXWebAssembly],
+  );
   assert.equal(globalThis.GameGlobal.PlatformRuntime.capabilities.webAssembly, true);
-  assert.equal(
+  assert.notEqual(
     globalThis.WebAssembly,
     nativeWebAssembly,
-    "TapTap keeps the standard WebAssembly object instead of the native shim",
+    "TapTap installs the native WASM bridge shim for the Brotli engine file",
+  );
+  assert.equal(
+    typeof globalThis.WebAssembly.instantiate,
+    "function",
+    "the installed shim keeps an instantiate entry point",
   );
   assert.equal(counters.nativeInstantiateCalls(), 0);
 

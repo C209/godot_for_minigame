@@ -67,6 +67,14 @@ const _bridgeTargets = [_global, globalThis];
 if (_global.__adapter && _global.__adapter.window) {
   _bridgeTargets.push(_global.__adapter.window);
 }
+// A host may expose a real global `window` that the engine resolves instead of
+// our adapter window (Godot reads window[name] in
+// _godot_js_wrapper_interface_get). Register there too when it exists.
+let _hostWindow = null;
+try {
+  if (typeof window !== "undefined" && window) _hostWindow = window;
+} catch (_) {}
+if (_hostWindow) _bridgeTargets.push(_hostWindow);
 for (const target of [...new Set(_bridgeTargets)]) {
   if (!_safeSet(target, BRIDGE_GLOBAL_NAME, godotSdk)) {
     throw new Error(`[Loader] Cannot register versioned bridge ${BRIDGE_GLOBAL_NAME}`);
@@ -75,6 +83,26 @@ for (const target of [...new Set(_bridgeTargets)]) {
   // directly. GDScript uses the versioned name and performs an ABI handshake.
   _safeSet(target, "godotSdk", godotSdk);
 }
+// Hosts differ in which global object Godot's JavaScriptBridge resolves names
+// against (`_godot_js_wrapper_interface_get` reads window[name]). Report every
+// registration target once so a missing bridge is diagnosable from a device log.
+console.log(
+  "[Loader] bridge scope: GameGlobal=" + typeof _global[BRIDGE_GLOBAL_NAME]
+  + ", globalThis=" + typeof globalThis[BRIDGE_GLOBAL_NAME]
+  + ", adapterWindow=" + (
+    _global.__adapter && _global.__adapter.window
+      ? typeof _global.__adapter.window[BRIDGE_GLOBAL_NAME]
+      : "no-adapter-window"
+  )
+  + ", hostWindow=" + (
+    _hostWindow ? typeof _hostWindow[BRIDGE_GLOBAL_NAME] : "absent"
+  )
+  + ", hostIsAdapterWindow=" + (
+    _hostWindow && _global.__adapter
+      ? String(_hostWindow === _global.__adapter.window)
+      : "n/a"
+  ),
+);
 
 // Use __adapter.canvas which has properly wrapped addEventListener/getContext,
 // even when GameGlobal.canvas is a non-configurable native getter that we can't replace.
@@ -286,6 +314,14 @@ class Loader {
         // ['/userfs'] into Engine.init() attempts to mount a missing backend.
         persistentPaths: [],
       };
+      if (PlatformRuntime.platform === "taptap") {
+        // TapTap's canvas is already the on-screen surface sized by the adapter.
+        // With the default policy 2 Godot recomputes the canvas from
+        // window.innerWidth/Height before the size is published, and the root
+        // Window freezes at zero height (black frame, dead input). Policy 0
+        // treats the canvas size as authoritative instead.
+        engineConfig.canvasResizePolicy = 0;
+      }
       if (!engine.config || typeof engine.config.update !== "function"
           || typeof engine.init !== "function"
           || typeof engine.preloadFile !== "function"
@@ -293,7 +329,17 @@ class Loader {
         throw new Error("Engine does not expose the staged init/preload/start API required for persistent restore");
       }
       engine.config.update(engineConfig);
+      console.log(
+        "[Loader] engine config: canvas=" + _canvas.width + "x" + _canvas.height
+        + ", resizePolicy=" + (engineConfig.canvasResizePolicy === undefined
+          ? "default" : engineConfig.canvasResizePolicy),
+      );
       const configuredArgs = Array.isArray(engine.config.args) ? engine.config.args.slice() : [];
+      if (PlatformRuntime.platform === "taptap") {
+        // The root Window is created from the startup resolution. Publish the
+        // adapter viewport explicitly instead of relying on host defaults.
+        configuredArgs.push("--resolution", `${_canvas.width}x${_canvas.height}`);
+      }
       engine.config.args = ["--main-pack", mainPack, ...configuredArgs];
 
       console.log("[Loader] 4/7 初始化引擎并预加载主包...");

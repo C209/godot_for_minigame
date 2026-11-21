@@ -19,9 +19,10 @@
 | JS 引擎 | iOS = JavaScriptCore（WKWebView 高性能模式，对标微信）；Android = V8 | 【确认】 |
 | JIT | 默认 iOS/Android 都开启 | 【确认】 |
 | 多线程 | 不支持（`System.Threading` 等价能力全部不可用） | 【确认】 |
+| 模块系统 | `require`（CommonJS）。`game.js` 以 classic script 执行，ESM `import` 直接 `SyntaxError: Cannot use import statement outside a module`；官方 Unity 管线在打包时用 Babel preset-env 转 CommonJS | 【已确认】← 真机 1.0.5 实测 |
 | 渲染 | 支持 WebGL2.0（=OpenGLES3.0）；WebGL1.0（=OpenGLES2.0）；**不支持 WebGPU** | 【确认】 |
 | WebAssembly | 支持（"启动阶段会进行 webassembly 编译"），wasm 为 JIT 代码 | 【确认】 |
-| WebAssembly 全局对象形态 | **已实测确认（真机 dev 1.0.4，猫咪消消落）**：原生 tap 环境提供标准 `WebAssembly` 全局 + `instantiate` 可用；另注入 `WXWebAssembly` 原生桥（微信式，可作兜底）；`instantiateStreaming` 不可用（无 fetch Response，正常）。Godot 引擎 wasm 走标准 `WebAssembly.instantiate`，开箱即用，无需原生桥 | 【已确认】✅ |
+| WebAssembly 全局对象形态 | 标准 `WebAssembly` 全局存在，`instantiate` 可编译**未压缩** buffer（真机 dev 1.0.4 探针）；但引擎产物是 `godot.wasm.br`，标准实现无法解 brotli，且 fetch polyfill 对 `.wasm` 请求返回空 stub。**必须使用宿主注入的 `WXWebAssembly` 原生桥按路径装载**（真机 dev 1.0.7 实测：标准路径报 `CompileError: BufferSource argument is empty`）。`instantiateStreaming` 不可用 | 【已确认】✅ |
 | `canvas.getContext('webgl2')` | **已实测确认**：`canvas.getContext('webgl')` 与 `getContext('webgl2')` 均返回非 null（离屏 canvas 也支持）。Godot 单线程 WebGL2 引擎可直接上屏 | 【已确认】✅ |
 | 内存 | Android 独立进程相对宽松；iOS 低档机 <1G，限制严 | 【确认】 |
 | 包体 | 整包 ≤60M（压缩后）；优秀参考 20M（接入指南）/ 10M（引擎建议页，两处口径不一，取 20M 为保守） | 【确认】 |
@@ -171,6 +172,10 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 ### 仍待验证
 - **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现（本次为 Android 真机，iOS 未测）。
 - **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
+- **黑屏根因：`GL_MAX_VIEWPORT_DIMS` 不可用**（真机 1.0.30 定位）。TapTap 的 WebGL 上下文对该查询返回 `undefined`/非数组，Godot 用 `RenderingServer.get_maximum_viewport_size()` 作为窗口最大尺寸，`size.min(max)` 把根窗口高度钳成 0 → 视口 `0x0x16384x0`、整屏黑、输入坐标也映射不到控件。adapter 现在拦截 `getParameter(GL_MAX_VIEWPORT_DIMS)` 并回落到合理尺寸；修复后 `window.size=(360,800)`、画面与点击同时恢复。
+- **音频：宿主不驱动 ScriptProcessor**（真机 1.0.34/1.0.35）。驱动可以初始化（`init channels=2`、`script_create ok`、`script_start ok`、不再报 driver failed），但 `onaudioprocess` 回调计数恒为 0，引擎混音拿不到时间片，`AudioStreamGenerator` 播放时只报 `stream cannot be sampled`。GainNode 转接、双声道输入、显式 `resume()` 均无效 —— 该宿主只实现了 WebAudio 接口，不跑音频线程。TapTap 上请使用 `inner_audio_*`（预编码音频），引擎音频视为静音。
+- **4.7.2 eval-free 模板不含 JS Bridge**：`_godot_js_wrapper_interface_get` / `GodotJSWrapper` 在 4.7.2 模板中整体缺失（4.6.1 内置模板存在）。`MiniGameSDK` 的 `get_interface` 因此永远返回 null，**在 4.7.2 模板上整个 SDK 不可用**，`inner_audio_*` 也就无法调用；要恢复需一份启用 JS Bridge 的 4.7.2 模板。这是影响全平台（含微信/抖音）的模板层问题，不限于 TapTap。
+- **JS Bridge 可见性**：真机 1.0.8/1.0.9 报 `Mini-game Bridge ABI 1 (godotMiniGameBridgeV1) is not available`。引擎的 `_godot_js_wrapper_interface_get` 只查 `window[name]`，而 loader 同时写到 `GameGlobal`、`globalThis` 与 `__adapter.window`，真机仍取不到。`MiniGameSDK.gd` 已加 `{gg, adapter, glob, win, direct}` 探针输出，待下一轮日志定位后再决定注册位置。
 
 ## 6. Phase 1 实现记录
 
@@ -186,10 +191,16 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 | 8 | `support-matrix.json`：`platformContracts.taptap`（`supportTier: beta`）+ 每行 `platforms.taptap: automated` | ✅ |
 | 9 | 自动测试：`tap_platform_smoke.test.mjs`、`entry_platform`、`platform_runtime`、`exporter_platform_contract`、`release_contract`、CI `taptap` 校验分支 | ✅ |
 | 10 | `MiniGameSDK.gd` TapTap 特有 API（分享板/成就/云存档/排行榜/支付/首页小组件/对战） | ⏳ Phase 3 |
+| 11 | 导出器 taptap 分支：7 个共享模块 ESM→CommonJS 转换，转换失败即中止导出 | ✅ 真机问题修复 |
 
 ### 关键实现决策
 
-- **TapTap 走标准 `WebAssembly`，不启用 `WXWebAssembly` 路径 shim**：`getNativeWebAssemblyApis()` 对 `taptap` 返回空数组。adapter 的原生 shim 会把 `instantiate(ArrayBuffer)` 改写成 `instantiate(文件路径)`，而真机探测已确认标准 `WebAssembly.instantiate(buffer)` 可用，启用 shim 反而替换掉可工作的实现。`tap_platform_smoke` 里用「注入 WXWebAssembly 后 `globalThis.WebAssembly` 不变」锁定该决策。
+- **宿主同时暴露 `wx` 兼容别名，`tap` 必须在自动探测中优先**：真机日志显示 TapTap 启动时会 `run tj-proxy.js` / `use a new namespace: tap`，同时向全局注入 `wx` 与 `WXWebAssembly`。若按「wx 优先」探测，会被误判为微信并且错误安装 WXWebAssembly 路径 shim（真机 1.0.6 即因此报 `TapTap entrypoint requires taptap, but detected wechat`）。因此 `platform_runtime` 的自动优先级为 `tap` → `TTMinis.game` → `wx` → `tt`；显式 `GameGlobal.__platform` 仍然最优先。
+- **TapTap 不支持 ES Module，导出时转 CommonJS**：真机 1.0.5（首个完整引擎包）启动即报 `SyntaxError: Cannot use import statement outside a module`——运行时把 `game.js` 当普通脚本解析。官方 Unity SDK 的 `Editor/.Babel` 会在打包时用 `@babel/preset-env` 把整包转成 CommonJS，说明 `require` 才是平台支持的模块系统。导出器对 taptap 的 7 个共享模块（`game.js` / `adapter.js` / `fetch.js` / `js/loader.js` / `js/libs/sdk.js` / `js/image_loader.js` / `js/platform_runtime.js`）做机械 ESM→CJS 转换：`import` → `require(...)`、`export default` → `module.exports.default`、具名导出 → `exports.x = x`；遇到无法识别的语法直接让导出失败，不产出坏包。`js/libs/godot.js` 本身是 UMD，保持原样（由 loader `require` 执行，尾部的 `GameGlobal.Engine` 注入仍生效）。
+- **TapTap 的 WebGL2 只有 Unity 需要的子集**：真机 1.0.8/1.0.9 连续暴露 `getSyncParameter`、`uniform1ui` 缺失（宿主是自研 Chromium Webglhost）。除引擎侧给 `_glGetSynciv`/`_glFenceSync`/`_glDeleteSync` 加守卫外，adapter 还加了 `_installWebGLCompat`：只填补宿主缺失的 WebGL2 方法（setter→no-op、create*→`{}`、getter→null/0、is*→false、`checkFramebufferStatus`→36053），并一次性打印缺失清单与 `WebGL caps`（version/vao/uniform1ui/instanced/uniformBuffer）。若清单里出现 `drawArraysInstanced`/`drawElementsInstanced` 等绘制路径，需要再评估。
+- **音频驱动的失败点是 `destination.channelCount`**：真机 1.0.9 日志 `scriptProcessor=function, worklet=undefined, destination.channelCount=undefined`。Godot 的 `GodotAudio.init()` 直接返回 `ctx.destination.channelCount`，undefined 会被判为无效声道数从而放弃驱动（`All audio drivers failed`）。adapter 现在用 Proxy 把 `destination.channelCount`/`maxChannelCount` 兜底为 2（不改原生对象，避免 defineProperty 失败）。
+- **TapTap 的 WebGL2 上下文缺少 sync 对象方法**：真机 1.0.8 启动到 `callMain` 时报 `TypeError: GLctx.getSyncParameter is not a function`（`_glGetSynciv` 未做存在性判断）。导出器给 `_glGetSynciv` / `_glFenceSync` / `_glDeleteSync` 加了方法存在性守卫；宿主实现了这些方法时行为与上游完全一致，缺失时安全跳过。该守卫对所有平台生效，不会改变微信/抖音/TikTok 路径。
+- **TapTap 必须走 `WXWebAssembly` 原生桥（不能只用标准 `WebAssembly`）**：引擎以 `godot.wasm.br` 交付，标准 `WebAssembly.instantiate` 无法解 brotli，且 `fetch.js` 对 `.wasm` 请求设计上返回空 stub（原设计假设由原生桥按路径读取）。真机 1.0.7 因此报 `CompileError: WebAssembly.instantiate(): BufferSource argument is empty`。修复：`getNativeWebAssemblyApis()` 对 taptap 返回宿主注入的 `WXWebAssembly`，adapter 安装路径式 shim 后用 `instantiate("engine/godot.wasm.br")` 装载，解压由宿主完成。真机 1.0.6 已证实该桥存在且可调用。
 - **`game.json` 保持最小集**：不写 `plugins`（不需要 UnityPlugin）、不写 `workers`（TapTap 的 `workers` 是字符串目录名，本项目未使用 worker）。`parallelPreloadSubpackages` 留作后续启动优化，未默认开启。
 - **分包占位文件沿用微信/抖音的零字节行为**：TapTap CLI 上传是否拒绝零字节文件尚未验证；若真机发现拒绝，把 `taptap` 加入 `zero_byte_allowed` 排除项并写注释占位即可。
 - **`supportTier: beta`**：Android 真机只验证了引擎启动与 WebGL2/WASM，iOS、开放能力、DevTools/CLI 全链路仍未验收。

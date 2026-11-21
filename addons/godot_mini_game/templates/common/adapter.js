@@ -43,6 +43,11 @@ function _backingSize(value) {
 
 _mainCanvas.width = _backingSize(_viewportWidth);
 _mainCanvas.height = _backingSize(_viewportHeight);
+// WeChat publishes the on-screen canvas as GameGlobal.canvas. TapTap leaves it
+// undefined; publish ours so host-side lookups resolve to the canvas we draw to.
+if (!_global.canvas) {
+  try { _global.canvas = _mainCanvas; } catch (_) {}
+}
 
 // The loader can create WebGL before Godot, and context attributes are fixed
 // at creation. Match Godot's Web defaults to keep letterboxing opaque and
@@ -86,12 +91,168 @@ function _getCachedContext(getContext, cache, type, attrs) {
 // Mini-game canvas may only allow getContext to succeed once per type.
 // Cache the context so the loader's WebGL2 ctx is reused by Godot's Emscripten.
 // Native canvas .getContext may be non-configurable, so try multiple override methods.
+// ── WebGL API completion ──────────────────────────────────────────
+// TapTap's WebGL host exposes a partial WebGL2 surface: the context reports
+// ES 3.x, but WebGL2-only entry points (uint uniforms, sync objects, queries,
+// samplers …) are absent because the host only implements what its Unity
+// runtime needed. Emscripten calls them unguarded, so Godot dies with
+// "GLctx.uniform1ui is not a function". Fill only the gaps with
+// type-appropriate stubs and report them once, so a genuinely missing draw
+// path stays visible instead of silently doing nothing.
+const _webglCompatFilled = [];
+let _webglCompatReported = false;
+
+function _installWebGLCompat(context, type) {
+  if (!context) return context;
+  if (!_webglCompatReported) {
+    _webglCompatReported = true;
+    try {
+      console.log(
+        "[Adapter] WebGL caps: type=" + type
+        + ", version=" + context.getParameter(context.VERSION)
+        + ", vao=" + (typeof context.createVertexArray)
+        + ", uniform1ui=" + (typeof context.uniform1ui)
+        + ", instanced=" + (typeof context.drawArraysInstanced)
+        + ", uniformBuffer=" + (typeof context.getUniformBlockIndex),
+      );
+    } catch (_) {}
+  }
+  const fill = (name, impl) => {
+    if (typeof context[name] === "function") return;
+    try {
+      Object.defineProperty(context, name, {
+        value: impl, configurable: true, writable: true,
+      });
+    } catch (_) {
+      try { context[name] = impl; } catch (_2) { return; }
+    }
+    _webglCompatFilled.push(name);
+  };
+  const noop = () => {};
+  const emptyObject = () => ({});
+  const nullValue = () => null;
+  const zero = () => 0;
+  const falseValue = () => false;
+
+  // Some hosts answer GL_MAX_VIEWPORT_DIMS with (16384, 0). Godot uses that as
+  // the maximum viewport size and clamps the root Window to it, which collapses
+  // the window height to 0 (black frame, dead input). Repair the query.
+  const _origGetParameter = typeof context.getParameter === "function"
+    ? context.getParameter.bind(context) : null;
+  if (_origGetParameter) {
+    context.getParameter = function (pname) {
+      const value = _origGetParameter(pname);
+      if (pname === 0x0D3A) { // GL_MAX_VIEWPORT_DIMS
+        const width = value && value[0] > 0 ? value[0] : 16384;
+        const height = value && value[1] > 0 ? value[1] : 16384;
+        if (!value || !(value[1] > 0)) {
+          console.warn(
+            "[Adapter] GL_MAX_VIEWPORT_DIMS reported " + (value ? value[0] + "x" + value[1] : "null")
+            + "; substituting " + width + "x" + height,
+          );
+          return new Int32Array([width, height]);
+        }
+      }
+      return value;
+    };
+  }
+
+  // WebGL2 shader/texture/feedback entry points Godot's GLES3 driver may call.
+  for (const name of [
+    "uniform1ui", "uniform2ui", "uniform3ui", "uniform4ui",
+    "uniform1uiv", "uniform2uiv", "uniform3uiv", "uniform4uiv",
+    "uniformMatrix2x3fv", "uniformMatrix2x4fv", "uniformMatrix3x2fv",
+    "uniformMatrix3x4fv", "uniformMatrix4x2fv", "uniformMatrix4x3fv",
+    "vertexAttribI4i", "vertexAttribI4iv", "vertexAttribI4ui", "vertexAttribI4uiv",
+    "vertexAttribDivisor", "drawArraysInstanced", "drawElementsInstanced",
+    "texImage3D", "texSubImage3D", "texStorage2D", "texStorage3D",
+    "renderbufferStorageMultisample", "blitFramebuffer", "drawBuffers", "readBuffer",
+    "invalidateFramebuffer", "invalidateSubFramebuffer",
+    "bindBufferBase", "bindBufferRange", "copyBufferSubData",
+    "clearBufferfv", "clearBufferiv", "clearBufferuiv", "clearBufferfi",
+    "beginTransformFeedback", "endTransformFeedback", "pauseTransformFeedback",
+    "resumeTransformFeedback", "transformFeedbackVaryings", "uniformBlockBinding",
+    "bindSampler", "samplerParameteri", "samplerParameterf",
+    "bindTransformFeedback", "fenceSync", "deleteSync", "waitSync",
+  ]) {
+    fill(name, noop);
+  }
+
+  for (const name of [
+    "createVertexArray", "createQuery", "createSampler", "createTransformFeedback",
+  ]) {
+    fill(name, emptyObject);
+  }
+
+  fill("getUniformBlockIndex", zero);
+  fill("getActiveUniformBlockParameter", zero);
+  fill("getActiveUniformBlockName", nullValue);
+  fill("getActiveUniforms", nullValue);
+  fill("getUniformIndices", nullValue);
+  fill("getFragDataLocation", () => -1);
+  fill("getIndexedParameter", nullValue);
+  fill("getInternalformatParameter", nullValue);
+  fill("getQuery", nullValue);
+  fill("getQueryParameter", zero);
+  fill("getSyncParameter", nullValue);
+  fill("getBufferSubData", noop);
+  fill("checkFramebufferStatus", () => 36053);
+
+  for (const name of [
+    "isVertexArray", "isQuery", "isSampler", "isTransformFeedback", "isSync",
+    "isBuffer", "isTexture", "isFramebuffer", "isRenderbuffer", "isProgram",
+    "isShader", "isEnabled",
+  ]) {
+    fill(name, falseValue);
+  }
+
+  if (_webglCompatFilled.length > 0) {
+    console.warn(
+      "[Adapter] WebGL compat stubs installed (" + _webglCompatFilled.length + "): "
+      + _webglCompatFilled.join(", "),
+    );
+  }
+  return context;
+}
+
 const _ctxCache = new Map();
 const _origGetContext = _mainCanvas.getContext.bind(_mainCanvas);
+
+// Some hosts composite the canvas asynchronously, outside the browser's
+// drawing-buffer lifecycle. With preserveDrawingBuffer=false those hosts read
+// an already cleared buffer and present black, even though the engine keeps
+// drawing. Keep the buffer readable; the cost is one extra copy per frame.
+//
+// renderViaOffscreenBackBuffer makes Emscripten render into an offscreen FBO
+// and copy it to the screen with blitFramebuffer every frame. Mini-game hosts
+// do not implement that resolve reliably (TapTap shows the last frame drawn
+// straight to the default framebuffer, e.g. the loading bar, forever), so the
+// engine must draw to the default framebuffer directly.
+//
+// Both are TapTap-only: WeChat, Douyin and TikTok keep Godot's Web defaults,
+// which is what their hosts were certified against.
+const _taptapHost = PlatformRuntime.platform === "taptap";
+
+function _hostContextAttrs(type, attrs) {
+  if (!_taptapHost || !_isWebGLContext(type)) return attrs;
+  // The engine keeps the attribute object it passes in and hands it to
+  // GL.registerContext afterwards, which is what actually allocates the
+  // offscreen FBO. Mutate it too, or the flag survives our copy.
+  const adjusted = (attrs && typeof attrs === "object") ? attrs : {};
+  adjusted.preserveDrawingBuffer = true;
+  adjusted.renderViaOffscreenBackBuffer = false;
+  return adjusted;
+}
+
 const _wrappedGetContext = function (type, attrs) {
   const cached = _ctxCache.has(type);
-  const ctx = _getCachedContext(_origGetContext, _ctxCache, type, attrs);
+  const ctx = _getCachedContext(
+    _origGetContext, _ctxCache, type, _hostContextAttrs(type, attrs),
+  );
   console.log("[Adapter] getContext('" + type + "') → " + (cached ? "返回缓存" : ctx ? "成功" : "失败(null)"));
+  // TapTap's WebGL host exposes a partial WebGL2 surface; complete it once,
+  // right after creation, so Emscripten never calls an undefined entry point.
+  if (ctx && !cached && _taptapHost) _installWebGLCompat(ctx, type);
   return ctx;
 };
 try {
@@ -227,6 +388,13 @@ const _fakeParent = {
 _safeDefine(_mainCanvas, "parentElement", _fakeParent);
 _safeDefine(_mainCanvas, "parentNode", _fakeParent);
 _installCanvasMetrics(_mainCanvas);
+console.log(
+  "[Adapter] canvas metrics: buffer=" + _mainCanvas.width + "x" + _mainCanvas.height
+  + ", client=" + _mainCanvas.clientWidth + "x" + _mainCanvas.clientHeight
+  + ", style=" + (_mainCanvas.style && _mainCanvas.style.width)
+  + "x" + (_mainCanvas.style && _mainCanvas.style.height)
+  + ", GameGlobalIsCanvas=" + (_global.canvas === _mainCanvas),
+);
 _safeDefine(_mainCanvas, "tabIndex", -1);
 if (!_mainCanvas.requestPointerLock) _safeDefine(_mainCanvas, "requestPointerLock", () => {});
 if (!_mainCanvas.requestFullscreen) _safeDefine(_mainCanvas, "requestFullscreen", () => Promise.resolve());
@@ -617,6 +785,44 @@ try {
   }
 } catch (e) {
   console.warn("[Adapter] WebAudioContext 创建失败:", e.message);
+}
+
+if (_nativeWebAudio) {
+  const _destination = _nativeWebAudio.destination;
+  console.log(
+    "[Adapter] WebAudio caps: scriptProcessor="
+    + (typeof _nativeWebAudio.createScriptProcessor)
+    + ", worklet="
+    + (typeof (_nativeWebAudio.audioWorklet && _nativeWebAudio.audioWorklet.addModule))
+    + ", destination.channelCount="
+    + (_destination && _destination.channelCount),
+  );
+  // Godot's WebAudio driver reads destination.channelCount and rejects the
+  // driver when it is not a positive number. Normalize it instead of silently
+  // falling back to the dummy audio driver.
+  if (_destination && !(Number(_destination.channelCount) > 0)) {
+    try {
+      Object.defineProperty(_destination, "channelCount", {
+        value: 2, configurable: true, writable: true,
+      });
+    } catch (_) {}
+  }
+  // Hosts may create the context in a non-running state. Try once at startup
+  // (the user-gesture retry below still runs when this is refused).
+  if (typeof _nativeWebAudio.resume === "function") {
+    try {
+      const resumed = _nativeWebAudio.resume();
+      if (resumed && typeof resumed.then === "function") {
+        resumed.then(() => {
+          console.log("[Adapter] AudioContext state after init resume:", _nativeWebAudio.state);
+        }).catch((e) => {
+          console.warn("[Adapter] AudioContext init resume refused:", e && e.message);
+        });
+      }
+    } catch (e) {
+      console.warn("[Adapter] AudioContext init resume error:", e && e.message);
+    }
+  }
 }
 
 // Auto-resume suspended AudioContext on first user touch (autoplay policy).
@@ -1198,6 +1404,28 @@ if (_global.canvas && _global.canvas !== _mainCanvas) {
   _safeDefine(_gc, "requestPointerLock", () => {});
   _safeDefine(_gc, "requestFullscreen", () => Promise.resolve());
 }
+
+// Some hosts expose requestAnimationFrame but never fire it, which leaves the
+// engine loaded with a frozen first frame. Probe once and fall back to a timer
+// driven loop when no frame arrives.
+(function () {
+  if (typeof _window.requestAnimationFrame !== "function") return;
+  let ticks = 0;
+  const probe = () => {
+    ticks += 1;
+    if (ticks < 3) {
+      try { _window.requestAnimationFrame(probe); } catch (_) {}
+    }
+  };
+  try { _window.requestAnimationFrame(probe); } catch (_) { return; }
+  setTimeout(() => {
+    if (ticks > 0) return;
+    console.warn("[Adapter] requestAnimationFrame never fired; using setTimeout(16ms) frames");
+    const fallback = (fn) => setTimeout(() => fn(Date.now()), 16);
+    _safeDefine(_window, "requestAnimationFrame", fallback);
+    try { globalThis.requestAnimationFrame = fallback; } catch (_) {}
+  }, 2000);
+})();
 
 console.log("[Adapter] ✓ 适配层初始化完成, canvas:", _mainCanvas.width + "x" + _mainCanvas.height);
 console.log("[Adapter] _mainCanvas === GameGlobal.canvas:", _mainCanvas === _global.canvas);
