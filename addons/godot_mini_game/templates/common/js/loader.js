@@ -56,6 +56,18 @@ function _safeSet(obj, key, value) {
   return obj[key] === value;
 }
 
+/// Host readFile() returns binary data as an ArrayBuffer or a view on one.
+/// Anything else (a decoded string, null) cannot be written into the engine's
+/// file system, so it is reported instead of silently staging an empty pack.
+function _fileBytes(data) {
+  if (!data) return null;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return null;
+}
+
 if (!_global.crypto || typeof _global.crypto.getRandomValues !== "function") {
   _safeSet(_global, "crypto", fallbackCrypto);
 }
@@ -324,9 +336,10 @@ class Loader {
       }
       if (!engine.config || typeof engine.config.update !== "function"
           || typeof engine.init !== "function"
-          || typeof engine.preloadFile !== "function"
+          || (typeof engine.copyToFS !== "function"
+            && typeof engine.preloadFile !== "function")
           || typeof engine.start !== "function") {
-        throw new Error("Engine does not expose the staged init/preload/start API required for persistent restore");
+        throw new Error("Engine does not expose the staged init/copy/start API required for persistent restore");
       }
       engine.config.update(engineConfig);
       console.log(
@@ -343,10 +356,9 @@ class Loader {
       engine.config.args = ["--main-pack", mainPack, ...configuredArgs];
 
       console.log("[Loader] 4/7 初始化引擎并预加载主包...");
-      await Promise.all([
-        engine.init(executable),
-        engine.preloadFile(mainPack, mainPack),
-      ]);
+      await engine.init(executable);
+      this._assertNotDisposed();
+      await this._stageMainPack(engine, mainPack);
       this._assertNotDisposed();
 
       console.log("[Loader] 5/7 从宿主持久目录恢复 /userfs...");
@@ -371,10 +383,28 @@ class Loader {
       // Restoring above therefore guarantees user:// is ready before GDScript.
       await engine.start();
       this._assertNotDisposed();
+      // Godot resolves start() even when its setup aborts (missing pack, failed
+      // FS mount): the runtime exit callback clears rtenv first. Reporting
+      // "loaded" for a dead engine leaves the player on a black screen with no
+      // clue, so surface it as the startup failure it is.
+      if (!engine.rtenv) {
+        throw new Error(
+          "[Loader] 引擎启动后立即退出：主包未挂载或引擎初始化失败（见上方 Godot 错误）",
+        );
+      }
 
       console.log("[Loader] 7/7 engine.start() 完成，设置文件同步...");
       if (_persistentWritebackEnabled) {
         this._syncTimer = _window.setInterval(() => {
+          if (!this.engine || !this.engine.rtenv) {
+            // The runtime is gone; stop snapshotting instead of repeating the
+            // same rejection every interval.
+            if (this._syncTimer !== null) {
+              _window.clearInterval(this._syncTimer);
+              this._syncTimer = null;
+            }
+            return;
+          }
           this._flushPersistentFiles("interval");
         }, 5000);
         this._hideSyncHandler = () => { this._flushPersistentFiles("hide"); };
@@ -396,6 +426,59 @@ class Loader {
 
   _assertNotDisposed() {
     if (this.state === "disposed") throw new Error("[Loader] Load was disposed");
+  }
+
+  /// Stage the main pack into the engine's virtual file system.
+  ///
+  /// The stock path is Engine.preloadFile() -> preloader queue -> FS write
+  /// inside Engine.start(). That indirection re-wraps the response body in a new
+  /// Response/ReadableStream and only then copies it, so a host whose Response
+  /// or stream semantics differ can leave the queue empty without any error
+  /// here; Godot then aborts with "Couldn't load project data at path /" and the
+  /// real cause is invisible. Reading the pack through the same host FS call the
+  /// persistent restore uses, then writing it through the engine's own bridge,
+  /// keeps both the byte count and the failure point in the log.
+  async _stageMainPack(engine, mainPack) {
+    const bytes = await this._readMainPack(mainPack);
+    const magic = Array.from(bytes.subarray(0, 4))
+      .map((byte) => byte.toString(16).padStart(2, "0")).join(" ");
+    console.log(`[Loader]     主包 ${mainPack}: ${bytes.byteLength} bytes, magic=${magic}`);
+    if (bytes.byteLength < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+      throw new Error(
+        `[Loader] 主包内容不是 ZIP: ${bytes.byteLength} bytes, magic=${magic}`,
+      );
+    }
+    if (typeof engine.copyToFS === "function") {
+      engine.copyToFS(mainPack, bytes);
+      console.log("[Loader]     主包已写入引擎虚拟文件系统");
+      return;
+    }
+    // Wrappers without copyToFS fall back to the preload queue. The bytes are
+    // already in memory, so hand them over instead of a path.
+    await engine.preloadFile(bytes, mainPack);
+  }
+
+  async _readMainPack(mainPack) {
+    const fs = _api.getFileSystemManager();
+    if (!fs || typeof fs.readFile !== "function") {
+      throw new Error("[Loader] 主包读取失败: 宿主缺少 FileSystemManager.readFile");
+    }
+    const data = await new Promise((resolve, reject) => {
+      fs.readFile({
+        filePath: mainPack,
+        success: (result) => resolve(result && result.data),
+        fail: (error) => reject(
+          new Error((error && error.errMsg) || `readFile 失败: ${mainPack}`),
+        ),
+      });
+    });
+    const bytes = _fileBytes(data);
+    if (!bytes) {
+      throw new Error(
+        `[Loader] 主包读取失败: 宿主返回了 ${data === null ? "null" : typeof data}，需要二进制数据`,
+      );
+    }
+    return bytes;
   }
 
   _flushPersistentFiles(reason) {

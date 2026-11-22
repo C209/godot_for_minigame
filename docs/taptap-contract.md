@@ -185,8 +185,18 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 
    出错栈全在宿主自己的 `tjfs`（TapTap 的 fetch / 文件系统层）：`WXWebAssembly.instantiate("engine/godot.wasm.br")` 内部用 `fetch` 读文件、构造 `Response` 时 `new TextEncoder()`。iOS 上 TapTap 跑在 **JavaScriptCore**（WKWebView 的 JSContext）里，`TextEncoder` / `TextDecoder` 属于 WebCore 注入的绑定、纯 JSC 环境没有，于是宿主这条读文件路径在 iOS 上整体不可用；Android（V8）有实现，所以此前 1.0.4–1.0.37 从未暴露。注意宿主是**同步抛错**（先构造 `Response` 再返回 promise），所以日志里没有 adapter 的 `[WASM] … failed:` 重试行——现在 adapter 会先打印 `[WASM] … threw synchronously:` 并原样抛出，不再用聚合错误覆盖宿主原因。**修复**：新增 `templates/common/js/web_compat.js`，在入口最前面（早于 `adapter.js`）做特性检测补齐 `TextEncoder` / `TextDecoder` / `atob` / `btoa` 并发布到 `globalThis` 与 `GameGlobal` 两个 realm；adapter 也不再把自己取到的 `undefined` 覆盖到宿主全局上（此前 `window` → `GameGlobal` 复制会把宿主已有的实现盖成 `undefined`）。产物里会打印 `[Compat] platform=taptap 编码 API: TextEncoder=polyfill …` 与 `[Compat] 宿主全局快照: …`，下一次真机日志可据此确认修复生效，并直接看到还有哪些宿主 API 缺失。
 
+8. **iOS 引擎起来了但主包没挂上**（iOS 真机 1.0.38 定位）：`TextEncoder` 修复后引擎确实开始启动（`[Loader] 6/7`、`GL_RENDERER: WebKit WebGL`），但 `callMain` 立刻报：
+
+   ```
+   ERROR: Parameter "zfile" is null.           at: try_open_pack (core/io/file_access_zip.cpp:169)
+   ERROR: Cannot open resource pack 'engine/godot.zip'.
+   ERROR: Couldn't load project data at path "/". Is the .pck file missing?
+   ```
+
+   随后每 5 秒刷 `[sync:interval] Error: Engine must be inited before copying files`（引擎已 abort、`rtenv` 被清空，回写定时器还在跑）。`zfile is null` 是 `FileAccess::open()` 返回空——**引擎虚拟文件系统里根本没有这个文件**，不是 PCK 内容问题：宿主的 `Engine.preloadFile() → preloader 队列 → start() 里 FS.writeFile()` 这条三级间接会把响应体重新包成新的 `Response`/`ReadableStream` 再拷贝，宿主实现差异会让队列为空却全程不报错，症状被推迟到 Godot 的「找不到工程数据」。**修复**：loader 不再依赖 preload 队列——用宿主 `FileSystemManager.readFile`（与持久化恢复同一条已验证路径）读到 ArrayBuffer、校验 ZIP 魔数、再 `engine.copyToFS()` 直接写进虚拟文件系统，并打印 `[Loader] 主包 engine/godot.zip: <n> bytes, magic=50 4b 03 04`；`engine.start()` 返回后若 `rtenv` 已空则直接判启动失败（不再谎报「加载完成」）；同步定时器在运行时空掉后自停。
+
 ### 仍待验证 / 已知限制
-- **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现（Android 真机已验；iOS 目前只跑到 wasm 装载阶段，`TextEncoder` 修复待复验）。
+- **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现（Android 真机已验；iOS 目前跑到引擎启动阶段，主包挂载修复待复验）。
 - **引擎 WebAudio 混音不可用（宿主限制）**：`tap.createWebAudioContext()` 存在、驱动可初始化（`init channels=2`/`script_create ok`/`script_start ok`、不再报 driver failed），但宿主从不回调 `onaudioprocess`（计数恒 0），引擎混音拿不到时间片。**请用 `inner_audio_*` 播预编码音频（真机 1.0.37 已确认发声）**，引擎 `AudioStreamGenerator` 视为静音。
 - **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
 - **DPR 仍 1x**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。

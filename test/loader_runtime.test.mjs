@@ -220,7 +220,17 @@ async function loadLoaderFixture(platform = "wechat", renderDpr = 3) {
             },
           });
         },
-        readFile(options) { options.success({ data: new Uint8Array([7, 8, 9]).buffer }); },
+        readFile(options) {
+          if (options.filePath === "engine/godot.zip") {
+            // The loader validates the ZIP signature before staging the pack, so
+            // the fixture answers with a real archive header.
+            options.success({
+              data: new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]).buffer,
+            });
+            return;
+          }
+          options.success({ data: new Uint8Array([7, 8, 9]).buffer });
+        },
       };
     },
     loadSubpackage(options) { options.success(); },
@@ -306,9 +316,25 @@ async function testWeChatCanvasSingleLoadAndDispose() {
     "the loading renderer must release the shared WebGL context before Godot callMain",
   );
   assert.equal(fixture.engineCalls.init, 1);
-  assert.equal(fixture.engineCalls.preload, 1);
+  assert.equal(
+    fixture.engineCalls.preload,
+    0,
+    "the loader stages the pack itself instead of relying on the preload queue",
+  );
   assert.deepEqual(fixture.engineCalls.ensured, ["/userfs"]);
-  assert.deepEqual(fixture.engineCalls.copied, [["/userfs/slot.save", [7, 8, 9]]]);
+  assert.deepEqual(
+    fixture.engineCalls.copied,
+    [
+      ["engine/godot.zip", [0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]],
+      ["/userfs/slot.save", [7, 8, 9]],
+    ],
+    "the main pack must reach the virtual FS before the engine starts",
+  );
+  assert.ok(
+    fixture.engineCalls.order.indexOf("copy:engine/godot.zip")
+      < fixture.engineCalls.order.indexOf("start"),
+    "the pack must be staged before Engine.start() invokes callMain",
+  );
   assert.ok(
     fixture.engineCalls.order.indexOf("copy:/userfs/slot.save")
       < fixture.engineCalls.order.indexOf("start"),
@@ -474,12 +500,21 @@ async function testEmptyPersistentDirectoryExistsBeforeMain() {
     access(options) { options.success({}); },
     mkdir(options) { options.success({}); },
     readdir(options) { options.success({ files: [] }); },
+    readFile(options) {
+      options.success({
+        data: new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]).buffer,
+      });
+    },
   });
   const loader = new fixture.Loader();
   await loader.load();
 
   assert.deepEqual(fixture.engineCalls.ensured, ["/userfs"]);
-  assert.deepEqual(fixture.engineCalls.copied, []);
+  assert.deepEqual(
+    fixture.engineCalls.copied,
+    [["engine/godot.zip", [0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]]],
+    "only the main pack is staged when the host has no saved files",
+  );
   assert.ok(
     fixture.engineCalls.order.indexOf("ensure:/userfs")
       < fixture.engineCalls.order.indexOf("start"),
@@ -493,9 +528,14 @@ async function testDouyinRestoreAndWritebackRemainEnabled() {
   const loader = new fixture.Loader();
   await loader.load();
 
-  assert.equal(fixture.fileSystemManagerCalls(), 1);
+  // One query reads the main pack, one performs the persistent restore. Both go
+  // through the host FS the platform has already proven.
+  assert.equal(fixture.fileSystemManagerCalls(), 2);
   assert.deepEqual(fixture.engineCalls.ensured, ["/userfs"]);
-  assert.deepEqual(fixture.engineCalls.copied, [["/userfs/slot.save", [7, 8, 9]]]);
+  assert.deepEqual(fixture.engineCalls.copied, [
+    ["engine/godot.zip", [0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]],
+    ["/userfs/slot.save", [7, 8, 9]],
+  ]);
   assert.equal(fixture.timerCount(), 1);
   fixture.triggerHide();
   await loader._syncPromise;
@@ -524,9 +564,16 @@ async function testTikTokKeepsReadOnlyRestoreAndSkipsWriteback() {
 
   assert.equal(loader.state, "running");
   assert.equal(fixture.engineCalls.start, 1);
-  assert.equal(fixture.fileSystemManagerCalls(), 1, "TikTok startup must retain the proven-safe read path");
+  assert.equal(
+    fixture.fileSystemManagerCalls(),
+    2,
+    "TikTok startup must retain the proven-safe read path (pack + restore)",
+  );
   assert.deepEqual(fixture.engineCalls.ensured, ["/userfs"]);
-  assert.deepEqual(fixture.engineCalls.copied, [["/userfs/slot.save", [7, 8, 9]]]);
+  assert.deepEqual(fixture.engineCalls.copied, [
+    ["engine/godot.zip", [0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]],
+    ["/userfs/slot.save", [7, 8, 9]],
+  ]);
   assert.equal(fixture.timerCount(), 0, "TikTok must not schedule persistent writes");
   fixture.triggerHide();
   assert.equal(loader._syncPromise, null);
@@ -535,10 +582,84 @@ async function testTikTokKeepsReadOnlyRestoreAndSkipsWriteback() {
   assert.deepEqual(fixture.clearedTimers, []);
 }
 
+async function testNonZipMainPackFailsBeforeStart() {
+  const fixture = await loadLoaderFixture();
+  globalThis.wx.getFileSystemManager = () => ({
+    access(options) { options.success({}); },
+    mkdir(options) { options.success({}); },
+    readdir(options) { options.success({ files: [] }); },
+    // A host that decodes the pack as text (or reads the wrong path) must not
+    // reach the engine: Godot would abort with an unrelated "project data"
+    // error far away from the real cause.
+    readFile(options) { options.success({ data: "not a pack" }); },
+  });
+  const loader = new fixture.Loader();
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    await assert.rejects(loader.load(), /主包读取失败: 宿主返回了 string/);
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.equal(fixture.engineCalls.start, 0, "a bad pack must fail before callMain");
+  assert.equal(loader.state, "failed");
+}
+
+async function testNonZipMainPackBytesFailBeforeStart() {
+  const fixture = await loadLoaderFixture();
+  globalThis.wx.getFileSystemManager = () => ({
+    access(options) { options.success({}); },
+    mkdir(options) { options.success({}); },
+    readdir(options) { options.success({ files: [] }); },
+    readFile(options) {
+      options.success({ data: new Uint8Array([1, 2, 3, 4]).buffer });
+    },
+  });
+  const loader = new fixture.Loader();
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    await assert.rejects(loader.load(), /主包内容不是 ZIP/);
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.equal(fixture.engineCalls.start, 0);
+  assert.equal(loader.state, "failed");
+}
+
+async function testEngineThatExitsDuringStartIsReportedAsFailure() {
+  const fixture = await loadLoaderFixture();
+  globalThis.GameGlobal.Engine = class ExitingEngine {
+    constructor() {
+      this.config = { args: [], update(options) { Object.assign(this, options || {}); } };
+    }
+    init() { this.rtenv = {}; return Promise.resolve(); }
+    copyToFS() {}
+    ensureFSDirectory() {}
+    // Godot resolves start() even when setup aborted; the exit callback clears
+    // the runtime first. Reporting "loaded" here would leave a black screen.
+    start() { this.rtenv = null; return Promise.resolve(); }
+    requestQuit() {}
+  };
+  const loader = new fixture.Loader();
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    await assert.rejects(loader.load(), /引擎启动后立即退出/);
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.equal(loader.state, "failed");
+  assert.equal(fixture.timerCount(), 0, "a dead engine must not schedule file sync");
+}
+
 await testWeChatCanvasSingleLoadAndDispose();
 await testLoadingBlitTracksDrawingBufferResize();
 await testLoadFailureIsObservableAndStable();
 await testDisposeBeforeLoadReleasesLoadingSurface();
+await testNonZipMainPackFailsBeforeStart();
+await testNonZipMainPackBytesFailBeforeStart();
+await testEngineThatExitsDuringStartIsReportedAsFailure();
 await testDisposedLoaderIgnoresLateSubpackageSuccess();
 await testHideQueuesLatestSaveBehindInflightWrite();
 await testEmptyPersistentDirectoryExistsBeforeMain();
