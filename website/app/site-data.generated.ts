@@ -49,6 +49,7 @@ export const releaseData = {
       "runtimeType": "native",
       "supportTier": "beta",
       "apiNamespace": "tap",
+      "nativeWebAssembly": "WXWebAssembly",
       "subpackageField": "subpackages",
       "packageLimitsBytes": {
         "total": 62914560
@@ -57,6 +58,17 @@ export const releaseData = {
         "exportSmoke": "automated",
         "devtoolCompile": "manual",
         "realDevice": "manual"
+      },
+      "deviceValidation": {
+        "android": {
+          "rendering": "verified",
+          "input": "verified",
+          "jsBridge": "verified",
+          "innerAudio": "verified",
+          "engineWebAudio": "unsupported-host",
+          "backingStore": "1x"
+        },
+        "ios": "pending"
       }
     }
   },

@@ -121,9 +121,9 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 | updateManager | `tap.getUpdateManager()` | 【待验证】 |
 | lifecycle | `tap.onShow()` / `tap.onHide()` | 【确认】← life-cycle 文档 |
 | runtimeError | `tap.onError()` | 【推断】 |
-| webAudio | `tap.createWebAudioContext()`（或 getAudioContext） | 【待验证】 |
-| innerAudio | `tap.createInnerAudioContext()` | 【确认】← InnerAudioContext 文档 |
-| webAssembly | 见 §1 待验证项 | 【待验证】 |
+| webAudio | `tap.createWebAudioContext()`（或 getAudioContext）。真机确认存在（44100），但宿主**不驱动 `onaudioprocess`**，引擎混音不可用 | 【已确认】⚠️ |
+| innerAudio | `tap.createInnerAudioContext()`。真机 dev 1.0.37 确认可发声（经 `MiniGameSDK.inner_audio_*`） | 【已确认】✅ |
+| webAssembly | 见 §1（走 `WXWebAssembly` 原生桥） | 【已确认】✅ |
 
 > **非 Unity 引擎适配路径（关键证据）**：官方「Cocos/Laya/Egret 引擎适配」文档明确，非 Unity 引擎**自己构造 document 适配层**（`document.createElement` 返回 `tap.createCanvas`/`tap.createImage`/audio/video），用 `tap` API 抹平浏览器差异（touch/缓存/音频/图片/socket/request），开放能力再主动走 `tap` API。**Godot 的 `adapter.js` 正是这一性质**——等价于 Cocos/Laya/Egret 路径，不依赖 UnityPlugin，也不依赖团结容器 `tj`。Unity SDK 走 `tj.*`+UnityPlugin 是「复用微信快适配」的实现选择，非唯一途径。
 
@@ -164,18 +164,20 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 
 ## 5. 风险清单（Phase 0 实测后更新）
 
-### 已解决（真机 dev 1.0.4 验证 ✅）
+### 已解决（真机 dev 1.0.4 – 1.0.37 验证 ✅）
 1. **WebAssembly 全局形态**：原生 tap 环境提供**标准 `WebAssembly` + `instantiate`**（Emscripten 产物开箱即用），另有 `WXWebAssembly` 原生桥兜底。Godot 无需写原生 WASM 桥。
 2. **`canvas.getContext('webgl2')`**：`webgl` 与 `webgl2` 均可用（离屏 canvas 也支持）。Godot 单线程 WebGL2 引擎可上屏。
 3. **真机验证通道**：走 `taptap-cli` 上传开发测试包 + 后台扫码。**VS Code 插件「TapTap MiniGame Debugger」局域网调试对裸三件套有加载 bug（下载 zip 但不执行 game.js），不可用**。
+4. **黑屏根因 `GL_MAX_VIEWPORT_DIMS`**（真机 1.0.30 定位）：宿主对 `getParameter(GL_MAX_VIEWPORT_DIMS)` 返回 `undefined`/非数组，Godot 把它当窗口最大尺寸、`size.min(max)` 把根窗口高度钳成 0 → 视口 `0x0x16384x0`、整屏黑、输入也映射不到控件。adapter 拦截并回落到 `16384x16384` 后 `window.size=(360,800)`，画面与点击同时恢复。
+5. **JS Bridge 缺失（4.7.2 eval-free 模板）**：`GodotJSWrapper`/`_godot_js_wrapper_interface_get` 在 4.7.2 r1 模板整体缺失（4.6.1 内置模板有），`MiniGameSDK.get_interface` 恒为 null、整个 SDK 不可用、`inner_audio_*` 也无法调用。**r2 模板用 `javascript_eval=yes` 重建，真机 dev 1.0.37 确认 `MiniGameSDK` 可用、`inner_audio` 发声**——这是影响全平台（含微信/抖音）的模板层修复，非 TapTap 独有。
+6. **分包零字节占位**：真机 1.0.7 确认 CLI 上传接受 `engine/game.js`、`subpacks/game.js` 零字节占位。
 
-### 仍待验证
+### 仍待验证 / 已知限制
 - **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现（本次为 Android 真机，iOS 未测）。
+- **引擎 WebAudio 混音不可用（宿主限制）**：`tap.createWebAudioContext()` 存在、驱动可初始化（`init channels=2`/`script_create ok`/`script_start ok`、不再报 driver failed），但宿主从不回调 `onaudioprocess`（计数恒 0），引擎混音拿不到时间片。**请用 `inner_audio_*` 播预编码音频（真机 1.0.37 已确认发声）**，引擎 `AudioStreamGenerator` 视为静音。
 - **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
-- **黑屏根因：`GL_MAX_VIEWPORT_DIMS` 不可用**（真机 1.0.30 定位）。TapTap 的 WebGL 上下文对该查询返回 `undefined`/非数组，Godot 用 `RenderingServer.get_maximum_viewport_size()` 作为窗口最大尺寸，`size.min(max)` 把根窗口高度钳成 0 → 视口 `0x0x16384x0`、整屏黑、输入坐标也映射不到控件。adapter 现在拦截 `getParameter(GL_MAX_VIEWPORT_DIMS)` 并回落到合理尺寸；修复后 `window.size=(360,800)`、画面与点击同时恢复。
-- **音频：宿主不驱动 ScriptProcessor**（真机 1.0.34/1.0.35）。驱动可以初始化（`init channels=2`、`script_create ok`、`script_start ok`、不再报 driver failed），但 `onaudioprocess` 回调计数恒为 0，引擎混音拿不到时间片，`AudioStreamGenerator` 播放时只报 `stream cannot be sampled`。GainNode 转接、双声道输入、显式 `resume()` 均无效 —— 该宿主只实现了 WebAudio 接口，不跑音频线程。TapTap 上请使用 `inner_audio_*`（预编码音频），引擎音频视为静音。
-- **4.7.2 eval-free 模板不含 JS Bridge**：`_godot_js_wrapper_interface_get` / `GodotJSWrapper` 在 4.7.2 模板中整体缺失（4.6.1 内置模板存在）。`MiniGameSDK` 的 `get_interface` 因此永远返回 null，**在 4.7.2 模板上整个 SDK 不可用**，`inner_audio_*` 也就无法调用；要恢复需一份启用 JS Bridge 的 4.7.2 模板。这是影响全平台（含微信/抖音）的模板层问题，不限于 TapTap。
-- **JS Bridge 可见性**：真机 1.0.8/1.0.9 报 `Mini-game Bridge ABI 1 (godotMiniGameBridgeV1) is not available`。引擎的 `_godot_js_wrapper_interface_get` 只查 `window[name]`，而 loader 同时写到 `GameGlobal`、`globalThis` 与 `__adapter.window`，真机仍取不到。`MiniGameSDK.gd` 已加 `{gg, adapter, glob, win, direct}` 探针输出，待下一轮日志定位后再决定注册位置。
+- **DPR 仍 1x**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。
+- **`updateManager` / `getUpdateManager`**：尚未真机核对。
 
 ## 6. Phase 1 实现记录
 
@@ -202,8 +204,8 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 - **TapTap 的 WebGL2 上下文缺少 sync 对象方法**：真机 1.0.8 启动到 `callMain` 时报 `TypeError: GLctx.getSyncParameter is not a function`（`_glGetSynciv` 未做存在性判断）。导出器给 `_glGetSynciv` / `_glFenceSync` / `_glDeleteSync` 加了方法存在性守卫；宿主实现了这些方法时行为与上游完全一致，缺失时安全跳过。该守卫对所有平台生效，不会改变微信/抖音/TikTok 路径。
 - **TapTap 必须走 `WXWebAssembly` 原生桥（不能只用标准 `WebAssembly`）**：引擎以 `godot.wasm.br` 交付，标准 `WebAssembly.instantiate` 无法解 brotli，且 `fetch.js` 对 `.wasm` 请求设计上返回空 stub（原设计假设由原生桥按路径读取）。真机 1.0.7 因此报 `CompileError: WebAssembly.instantiate(): BufferSource argument is empty`。修复：`getNativeWebAssemblyApis()` 对 taptap 返回宿主注入的 `WXWebAssembly`，adapter 安装路径式 shim 后用 `instantiate("engine/godot.wasm.br")` 装载，解压由宿主完成。真机 1.0.6 已证实该桥存在且可调用。
 - **`game.json` 保持最小集**：不写 `plugins`（不需要 UnityPlugin）、不写 `workers`（TapTap 的 `workers` 是字符串目录名，本项目未使用 worker）。`parallelPreloadSubpackages` 留作后续启动优化，未默认开启。
-- **分包占位文件沿用微信/抖音的零字节行为**：TapTap CLI 上传是否拒绝零字节文件尚未验证；若真机发现拒绝，把 `taptap` 加入 `zero_byte_allowed` 排除项并写注释占位即可。
-- **`supportTier: beta`**：Android 真机只验证了引擎启动与 WebGL2/WASM，iOS、开放能力、DevTools/CLI 全链路仍未验收。
+- **分包占位文件沿用微信/抖音的零字节行为**：真机 1.0.7 确认 CLI 上传接受零字节占位（`engine/game.js`、`subpacks/game.js`），无需把 taptap 加入 `zero_byte_allowed` 排除项。
+- **`supportTier: beta`**：Android 真机已验证渲染/输入/JS Bridge/InnerAudio；iOS、TapTap 开放能力（分享板/成就/云存档/排行榜/支付/小组件/对战）、`updateManager` 与 host DPR 拆分仍未验收。
 
 ## 7. 后续阶段（Phase 2–4 待办）
 
