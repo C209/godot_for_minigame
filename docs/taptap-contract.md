@@ -121,7 +121,7 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 | updateManager | `tap.getUpdateManager()` | 【待验证】 |
 | lifecycle | `tap.onShow()` / `tap.onHide()` | 【确认】← life-cycle 文档 |
 | runtimeError | `tap.onError()` | 【推断】 |
-| webAudio | `tap.createWebAudioContext()`（或 getAudioContext）。真机确认存在（44100），但宿主**不驱动 `onaudioprocess`**，引擎混音不可用 | 【已确认】⚠️ |
+| webAudio | `tap.createWebAudioContext()`（或 getAudioContext）。真机确认存在；**Android 宿主不驱动 `onaudioprocess`（引擎混音不可用），iOS 驱动正常**（详见 §5 待验证第 2 条） | 【已确认】Android ⚠️ / iOS ✅ |
 | innerAudio | `tap.createInnerAudioContext()`。真机 dev 1.0.37 确认可发声（经 `MiniGameSDK.inner_audio_*`） | 【已确认】✅ |
 | webAssembly | 见 §1（走 `WXWebAssembly` 原生桥） | 【已确认】✅ |
 
@@ -199,10 +199,12 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 
 ### 仍待验证 / 已知限制
 - **iOS 低档机内存**：dev 1.0.40 已在 iPhone 上跑通 demo（渲染/输入），但 <1G 内存低档机与长时间运行的内存表现仍未压测。
-- **引擎 WebAudio 混音不可用（宿主限制）**：`tap.createWebAudioContext()` 存在、驱动可初始化（`init channels=2`/`script_create ok`/`script_start ok`、不再报 driver failed），但宿主从不回调 `onaudioprocess`（计数恒 0），引擎混音拿不到时间片。**请用 `inner_audio_*` 播预编码音频（真机 1.0.37 已确认发声）**，引擎 `AudioStreamGenerator` 视为静音。
+- **引擎 WebAudio 混音按平台分裂（真机 dev 1.0.40 之后修正）**：**Android** 上 `tap.createWebAudioContext()` 存在、驱动可初始化（`init channels=2`/`script_create ok`/`script_start ok`），但宿主从不回调 `onaudioprocess`（计数恒 0），引擎混音拿不到时间片 → 该平台请用 `inner_audio_*`（真机 1.0.37 已确认发声），引擎 `AudioStreamGenerator` 视为静音。**iOS 上同一路径是通的**：真机日志 `[Audio] script_create ok` 后 3 秒内 `[Audio] onaudioprocess callbacks=70`，2048 samples / 48kHz = 42.67ms × 70 ≈ 2.99s，等于满速驱动；`WebAudio caps` 还多出 `worklet=function`。此前把「宿主不支持引擎混音」写成全平台结论是错的，只对 Android 自研 Chromium webglhost 成立。iOS 尚缺一次主观听感确认（回调跑满 ≠ 扬声器有声）。
 - **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
-- **DPR 仍 1x**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。
+- **DPR 仍 1x**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。iOS 侧证据：dev 1.0.40 日志 `buffer=440x956` 与 `client=440x956` 相等，而 440×956 正是 iPhone 16 Pro Max 的**逻辑**分辨率（物理 1320×2868），即当前按 1/3 线性分辨率渲染后由 GPU 放大。开关在 `adapter.js` 的 `_dpr`（`taptap` 被钉死为 1）；放开前先看 `canvas metrics` 新加的 `dpr=… (host=…)` 字段确认宿主上报倍数，并注意 3x = 9 倍填充，建议先按 `min(hostDpr, 2)` 真机量帧率。
 - **`updateManager` / `getUpdateManager`**：尚未真机核对。
+- **`cannot change cached WebGL attribute stencil (requested false, cached true)` 是 iOS 良性告警**：adapter 的默认属性就是 `stencil:false`，但 WebKit 只要 `depth:true` 就必然分配 DEPTH24_STENCIL8 并回读 `stencil:true`，属宿主行为而非适配缺陷（代价每像素多 8 bit，Godot 不用 stencil 也无害）。待办：对该组合做白名单，否则将来真正的属性不匹配（`antialias` / `depth`）会被这条噪音盖掉。
+- **宿主仍缺 `FormData` / `structuredClone` / `TextDecoderStream`**：仓库内零引用（只出现在 `web_compat.js` 的 watchlist），不影响启动；游戏侧若用 FormData 上传会直接 ReferenceError，需在 USAGE 明示或补最小桩。
 
 ## 6. Phase 1 实现记录
 
