@@ -143,16 +143,24 @@ func _test_dock() -> void:
 	await process_frame
 	var button: Button = dock.get_node("TemplateRow/DownloadBtn")
 	var status := Exporter.get_template_status()
-	if bool(status.get("ready", false)):
+	var catalog_entry := TemplateDownload.find_for_editor(
+		TemplateDownload.load_catalog(),
+		str(status.get("editor_version", "")),
+		str(status.get("editor_commit", "")),
+	)
+	# A ready store template can still be one revision behind the certified
+	# catalog (r1 imported, r2 published); the dock offers that upgrade.
+	var offers_newer_revision := (
+		bool(status.get("ready", false))
+		and str(status.get("source", "")).begins_with("store")
+		and int(status.get("template_revision", 0))
+			< int(catalog_entry.get("templateRevision", 0))
+	)
+	if bool(status.get("ready", false)) and not offers_newer_revision:
 		_assert_true(not button.visible, "no download button while a template is ready")
 	else:
-		var expected := TemplateDownload.find_for_editor(
-			TemplateDownload.load_catalog(),
-			str(status.editor_version),
-			str(status.editor_commit),
-		)
 		_assert_true(
-			button.visible == not expected.is_empty(),
+			button.visible == not catalog_entry.is_empty(),
 			"the download button follows the catalog match",
 		)
 	dock.queue_free()
