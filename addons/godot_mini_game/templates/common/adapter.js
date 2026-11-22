@@ -30,8 +30,12 @@ const _winInfo = PlatformRuntime.getSystemInfo();
 // The backing store uses host DPR for sharp rendering, and Godot maps input
 // into it using the ratio of the backing size to the logical canvas bounds.
 // Godot uses window.devicePixelRatio for its own canvas sizing when HiDPI is enabled.
+//
+// TapTap stays on the 1x backing store its device runs were verified against;
+// flipping it to the host DPR split needs a fresh real-device pass first.
 const _reportedDpr = Number(_winInfo.pixelRatio ?? _winInfo.devicePixelRatio ?? 1);
-const _dpr = Number.isFinite(_reportedDpr) && _reportedDpr > 0 ? _reportedDpr : 1;
+const _hostDpr = Number.isFinite(_reportedDpr) && _reportedDpr > 0 ? _reportedDpr : 1;
+const _dpr = PlatformRuntime.platform === "taptap" ? 1 : _hostDpr;
 let _viewportWidth = Number(_winInfo.windowWidth || _winInfo.screenWidth || _mainCanvas.width || 1);
 let _viewportHeight = Number(_winInfo.windowHeight || _winInfo.screenHeight || _mainCanvas.height || 1);
 
