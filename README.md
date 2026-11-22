@@ -105,7 +105,7 @@ of truth for these values in releases, CI, and the website.
 | WeChat Mini Game | `wx` | `subpackages` | ✅ Supported |
 | Douyin Mini Game | `tt` | `subPackages` | ✅ Supported |
 | TikTok Mini Game Native | `TTMinis.game` | `subpackages` | 🧪 Beta — TikTok 43.4.0+; every release needs a `ttmg` compile and a real-device run |
-| TapTap Mini Game | `tap` | `subpackages` | 🧪 Beta — rendering, input, JS bridge, and inner audio verified on Android; iOS and TapTap open APIs still need validation |
+| TapTap Mini Game | `tap` | `subpackages` | 🧪 Beta — rendering, input, JS bridge, and inner audio verified on Android; rendering and input verified on iOS (dev 1.0.40); TapTap open APIs still need validation |
 
 > [!IMPORTANT]
 > Automated checks do not replace testing in the platform DevTools and on real devices.

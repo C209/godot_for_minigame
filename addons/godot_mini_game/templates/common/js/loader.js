@@ -624,18 +624,25 @@ class Loader {
     const candidates = [mainPack, `/${mainPack}`];
     const rejected = [];
     for (const candidate of candidates) {
-      const bytes = await this._readPackFrom(fs, candidate, rejected);
-      if (bytes) return bytes;
+      const info = {};
+      const bytes = await this._readPackFrom(fs, candidate, rejected, info);
+      if (bytes) {
+        // Which call style and path actually worked: the host differences are
+        // documented in docs/taptap-contract.md, and this line keeps the answer
+        // visible on every device run.
+        console.log(`[Loader]     主包读取方式: ${info.via} (${info.path})`);
+        return bytes;
+      }
     }
     throw new Error(`[Loader] 主包读取失败: 无法识别宿主返回的数据 (${rejected.join(" | ")})`);
   }
 
-  async _readPackFrom(fs, packPath, rejected) {
+  async _readPackFrom(fs, packPath, rejected, info) {
     // 1. WeChat-style options object.
     try {
       const raw = await _readFileOptions(fs, packPath);
       const bytes = await _bytesFromRead(raw);
-      if (bytes) return bytes;
+      if (bytes) { info.via = "options"; info.path = packPath; return bytes; }
       rejected.push(`${packPath} binary: ${_describeValue(raw)}`);
       // An empty envelope means the path resolved to nothing useful; the other
       // call styles would only repeat the same answer.
@@ -650,7 +657,7 @@ class Loader {
       const text = await _readFileOptions(fs, packPath, { encoding: "base64" });
       if (typeof text === "string") {
         const bytes = _base64Bytes(text);
-        if (bytes) return bytes;
+        if (bytes) { info.via = "base64"; info.path = packPath; return bytes; }
       }
       rejected.push(`${packPath} base64: ${_describeValue(text)}`);
     } catch (error) {
@@ -661,7 +668,7 @@ class Loader {
     try {
       const raw = await _readFileNodeStyle(fs, packPath);
       const bytes = await _bytesFromRead(raw);
-      if (bytes) return bytes;
+      if (bytes) { info.via = "node"; info.path = packPath; return bytes; }
       rejected.push(`${packPath} node: ${_describeValue(raw)}`);
     } catch (error) {
       rejected.push(`${packPath} node: ${error && error.message}`);
@@ -673,7 +680,7 @@ class Loader {
       try {
         const raw = fs.readFileSync(packPath);
         const bytes = await _bytesFromRead(raw);
-        if (bytes) return bytes;
+        if (bytes) { info.via = "readFileSync"; info.path = packPath; return bytes; }
         rejected.push(`${packPath} readFileSync: ${_describeValue(raw)}`);
       } catch (error) {
         rejected.push(`${packPath} readFileSync: ${error && error.message}`);

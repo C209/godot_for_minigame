@@ -172,7 +172,7 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 5. **JS Bridge 缺失（4.7.2 eval-free 模板）**：`GodotJSWrapper`/`_godot_js_wrapper_interface_get` 在 4.7.2 r1 模板整体缺失（4.6.1 内置模板有），`MiniGameSDK.get_interface` 恒为 null、整个 SDK 不可用、`inner_audio_*` 也无法调用。**r2 模板用 `javascript_eval=yes` 重建，真机 dev 1.0.37 确认 `MiniGameSDK` 可用、`inner_audio` 发声**——这是影响全平台（含微信/抖音）的模板层修复，非 TapTap 独有。
 6. **分包零字节占位**：真机 1.0.7 确认 CLI 上传接受 `engine/game.js`、`subpacks/game.js` 零字节占位。
 
-### 已定位并修复（iOS 复验待做）
+### iOS 专属问题：定位与修复（dev 1.0.40 真机确认 ✅）
 
 7. **iOS JavaScriptCore 没有 `TextEncoder`，引擎在读 wasm 时崩溃**（iOS 真机 2026-11-22 包定位）：首个 iOS 包启动到 `[WASM] loading: engine/godot.wasm.br` 后立即失败：
 
@@ -183,7 +183,7 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
           @tjapp://game-runtime/tjfs/index.js:7941:26
    ```
 
-   出错栈全在宿主自己的 `tjfs`（TapTap 的 fetch / 文件系统层）：`WXWebAssembly.instantiate("engine/godot.wasm.br")` 内部用 `fetch` 读文件、构造 `Response` 时 `new TextEncoder()`。iOS 上 TapTap 跑在 **JavaScriptCore**（WKWebView 的 JSContext）里，`TextEncoder` / `TextDecoder` 属于 WebCore 注入的绑定、纯 JSC 环境没有，于是宿主这条读文件路径在 iOS 上整体不可用；Android（V8）有实现，所以此前 1.0.4–1.0.37 从未暴露。注意宿主是**同步抛错**（先构造 `Response` 再返回 promise），所以日志里没有 adapter 的 `[WASM] … failed:` 重试行——现在 adapter 会先打印 `[WASM] … threw synchronously:` 并原样抛出，不再用聚合错误覆盖宿主原因。**修复**：新增 `templates/common/js/web_compat.js`，在入口最前面（早于 `adapter.js`）做特性检测补齐 `TextEncoder` / `TextDecoder` / `atob` / `btoa` 并发布到 `globalThis` 与 `GameGlobal` 两个 realm；adapter 也不再把自己取到的 `undefined` 覆盖到宿主全局上（此前 `window` → `GameGlobal` 复制会把宿主已有的实现盖成 `undefined`）。产物里会打印 `[Compat] platform=taptap 编码 API: TextEncoder=polyfill …` 与 `[Compat] 宿主全局快照: …`，下一次真机日志可据此确认修复生效，并直接看到还有哪些宿主 API 缺失。
+   出错栈全在宿主自己的 `tjfs`（TapTap 的 fetch / 文件系统层）：`WXWebAssembly.instantiate("engine/godot.wasm.br")` 内部用 `fetch` 读文件、构造 `Response` 时 `new TextEncoder()`。iOS 上 TapTap 跑在 **JavaScriptCore**（WKWebView 的 JSContext）里，`TextEncoder` / `TextDecoder` 属于 WebCore 注入的绑定、纯 JSC 环境没有，于是宿主这条读文件路径在 iOS 上整体不可用；Android（V8）有实现，所以此前 1.0.4–1.0.37 从未暴露。注意宿主是**同步抛错**（先构造 `Response` 再返回 promise），所以日志里没有 adapter 的 `[WASM] … failed:` 重试行——现在 adapter 会先打印 `[WASM] … threw synchronously:` 并原样抛出，不再用聚合错误覆盖宿主原因。**修复**：新增 `templates/common/js/web_compat.js`，在入口最前面（早于 `adapter.js`）做特性检测补齐 `TextEncoder` / `TextDecoder` / `atob` / `btoa` 并发布到 `globalThis` 与 `GameGlobal` 两个 realm；adapter 也不再把自己取到的 `undefined` 覆盖到宿主全局上（此前 `window` → `GameGlobal` 复制会把宿主已有的实现盖成 `undefined`）。产物里会打印 `[Compat] platform=taptap 编码 API: TextEncoder=polyfill …` 与 `[Compat] 宿主全局快照: …`。dev 1.0.40 确认 iOS 上为 `TextEncoder=polyfill TextDecoder=polyfill atob=host btoa=host`，快照显示仍缺 `FormData / structuredClone / TextDecoderStream`（当前不影响启动）。
 
 8. **iOS 引擎起来了但主包没挂上**（iOS 真机 1.0.38 定位）：`TextEncoder` 修复后引擎确实开始启动（`[Loader] 6/7`、`GL_RENDERER: WebKit WebGL`），但 `callMain` 立刻报：
 
@@ -193,12 +193,12 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
    ERROR: Couldn't load project data at path "/". Is the .pck file missing?
    ```
 
-   随后每 5 秒刷 `[sync:interval] Error: Engine must be inited before copying files`（引擎已 abort、`rtenv` 被清空，回写定时器还在跑）。`zfile is null` 是 `FileAccess::open()` 返回空——**引擎虚拟文件系统里根本没有这个文件**，不是 PCK 内容问题：宿主的 `Engine.preloadFile() → preloader 队列 → start() 里 FS.writeFile()` 这条三级间接会把响应体重新包成新的 `Response`/`ReadableStream` 再拷贝，宿主实现差异会让队列为空却全程不报错，症状被推迟到 Godot 的「找不到工程数据」。**修复**：loader 不再依赖 preload 队列——用宿主 `FileSystemManager.readFile`（与持久化恢复同一条已验证路径）读到 ArrayBuffer、校验 ZIP 魔数、再 `engine.copyToFS()` 直接写进虚拟文件系统，并打印 `[Loader] 主包 engine/godot.zip: <n> bytes, magic=50 4b 03 04`；`engine.start()` 返回后若 `rtenv` 已空则直接判启动失败（不再谎报「加载完成」）；同步定时器在运行时空掉后自停。
+   随后每 5 秒刷 `[sync:interval] Error: Engine must be inited before copying files`（引擎已 abort、`rtenv` 被清空，回写定时器还在跑）。`zfile is null` 是 `FileAccess::open()` 返回空——**引擎虚拟文件系统里根本没有这个文件**，不是 PCK 内容问题：宿主的 `Engine.preloadFile() → preloader 队列 → start() 里 FS.writeFile()` 这条三级间接会把响应体重新包成新的 `Response`/`ReadableStream` 再拷贝，宿主实现差异会让队列为空却全程不报错，症状被推迟到 Godot 的「找不到工程数据」。**修复**：loader 不再依赖 preload 队列——用宿主 `FileSystemManager.readFile`（与持久化恢复同一条已验证路径）读到 ArrayBuffer、校验 ZIP 魔数、再 `engine.copyToFS()` 直接写进虚拟文件系统，并打印 `[Loader] 主包 engine/godot.zip: <n> bytes, magic=50 4b 03 04`；`engine.start()` 返回后若 `rtenv` 已空则直接判启动失败（不再谎报「加载完成」）；同步定时器在运行时空掉后自停。（dev 1.0.40 确认主包已挂上、引擎正常进入游戏。）
 
-9. **TapTap 的 `readFile` 回调不是二进制**（iOS 真机 1.0.39 定位）：上一条改成自己读包后立刻暴露 `[Loader] 主包读取失败: 宿主返回了 object，需要二进制数据`。TapTap 的 `FileSystemManager` 把一部分调用交给 Node 风格 shim（`stat` 就必须用 `(path, cb)`），`readFile` 的 `data` 既不是 `ArrayBuffer` 也不是 TypedArray，无法直接写进引擎 FS。**修复**：主包读取改为「多形状 + 多路径」——依次尝试 WeChat options、`encoding:"base64"`（用 atob 解码）、Node 风格 `readFile(path, cb)`（4 秒超时）、`readFileSync`，每条路径都先试 `engine/godot.zip` 再试 `/engine/godot.zip`；返回值用 `_fileBytes` / `_bytesFromRead` 递归解包（同/跨 realm 的 ArrayBuffer、TypedArray、`{type:"Buffer",data:[…]}`、`{buffer}`、`{data}`、array-like、promise、`arrayBuffer()/text()` body）；空 envelope 视为该路径无效并换下一个。全部失败时把每次调用的返回值形状（`[object X]/Ctor keys=[…] byteLength length`）写进错误，下一次真机日志即可定位真实类型。
+9. **TapTap 的 `readFile` 回调不是二进制**（iOS 真机 1.0.39 定位）：上一条改成自己读包后立刻暴露 `[Loader] 主包读取失败: 宿主返回了 object，需要二进制数据`。TapTap 的 `FileSystemManager` 把一部分调用交给 Node 风格 shim（`stat` 就必须用 `(path, cb)`），`readFile` 的 `data` 既不是 `ArrayBuffer` 也不是 TypedArray，无法直接写进引擎 FS。**修复**：主包读取改为「多形状 + 多路径」——依次尝试 WeChat options、`encoding:"base64"`（用 atob 解码）、Node 风格 `readFile(path, cb)`（4 秒超时）、`readFileSync`，每条路径都先试 `engine/godot.zip` 再试 `/engine/godot.zip`；返回值用 `_fileBytes` / `_bytesFromRead` 递归解包（同/跨 realm 的 ArrayBuffer、TypedArray、`{type:"Buffer",data:[…]}`、`{buffer}`、`{data}`、array-like、promise、`arrayBuffer()/text()` body）；空 envelope 视为该路径无效并换下一个。全部失败时把每次调用的返回值形状（`[object X]/Ctor keys=[…] byteLength length`）写进错误。成功时会打印 `[Loader] 主包读取方式: <options|base64|node|readFileSync> (<path>)`，便于后续按平台固化路径。**dev 1.0.40 起 iOS 正常进入游戏界面，`Tap to Score` 点击生效**（渲染 + 输入同时确认）。
 
 ### 仍待验证 / 已知限制
-- **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现（Android 真机已验；iOS 目前跑到引擎启动阶段，主包挂载修复待复验）。
+- **iOS 低档机内存**：dev 1.0.40 已在 iPhone 上跑通 demo（渲染/输入），但 <1G 内存低档机与长时间运行的内存表现仍未压测。
 - **引擎 WebAudio 混音不可用（宿主限制）**：`tap.createWebAudioContext()` 存在、驱动可初始化（`init channels=2`/`script_create ok`/`script_start ok`、不再报 driver failed），但宿主从不回调 `onaudioprocess`（计数恒 0），引擎混音拿不到时间片。**请用 `inner_audio_*` 播预编码音频（真机 1.0.37 已确认发声）**，引擎 `AudioStreamGenerator` 视为静音。
 - **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
 - **DPR 仍 1x**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。
@@ -219,7 +219,8 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 | 9 | 自动测试：`tap_platform_smoke.test.mjs`、`entry_platform`、`platform_runtime`、`exporter_platform_contract`、`release_contract`、CI `taptap` 校验分支 | ✅ |
 | 10 | `MiniGameSDK.gd` TapTap 特有 API（分享板/成就/云存档/排行榜/支付/首页小组件/对战） | ⏳ Phase 3 |
 | 11 | 导出器 taptap 分支：8 个共享模块 ESM→CommonJS 转换，转换失败即中止导出 | ✅ 真机问题修复 |
-| 12 | `templates/common/js/web_compat.js`：iOS JSC 缺失的 `TextEncoder`/`TextDecoder` 补齐，入口最先加载 | ✅ 待 iOS 复验 |
+| 12 | `templates/common/js/web_compat.js`：iOS JSC 缺失的 `TextEncoder`/`TextDecoder` 补齐，入口最先加载 | ✅ dev 1.0.40 真机确认 |
+| 13 | `js/loader.js`：主包改由宿主 FS 读取 + `copyToFS` 直写，覆盖多种 readFile 返回形状与路径 | ✅ dev 1.0.40 真机确认 |
 
 ### 关键实现决策
 
@@ -232,10 +233,10 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 - **TapTap 必须走 `WXWebAssembly` 原生桥（不能只用标准 `WebAssembly`）**：引擎以 `godot.wasm.br` 交付，标准 `WebAssembly.instantiate` 无法解 brotli，且 `fetch.js` 对 `.wasm` 请求设计上返回空 stub（原设计假设由原生桥按路径读取）。真机 1.0.7 因此报 `CompileError: WebAssembly.instantiate(): BufferSource argument is empty`。修复：`getNativeWebAssemblyApis()` 对 taptap 返回宿主注入的 `WXWebAssembly`，adapter 安装路径式 shim 后用 `instantiate("engine/godot.wasm.br")` 装载，解压由宿主完成。真机 1.0.6 已证实该桥存在且可调用。
 - **`game.json` 保持最小集**：不写 `plugins`（不需要 UnityPlugin）、不写 `workers`（TapTap 的 `workers` 是字符串目录名，本项目未使用 worker）。`parallelPreloadSubpackages` 留作后续启动优化，未默认开启。
 - **分包占位文件沿用微信/抖音的零字节行为**：真机 1.0.7 确认 CLI 上传接受零字节占位（`engine/game.js`、`subpacks/game.js`），无需把 taptap 加入 `zero_byte_allowed` 排除项。
-- **`supportTier: beta`**：Android 真机已验证渲染/输入/JS Bridge/InnerAudio；iOS、TapTap 开放能力（分享板/成就/云存档/排行榜/支付/小组件/对战）、`updateManager` 与 host DPR 拆分仍未验收。
+- **`supportTier: beta`**：Android 真机已验证渲染/输入/JS Bridge/InnerAudio；iOS 真机（dev 1.0.40）已验证渲染/输入（进游戏 + 点击生效），JS Bridge/音频待验；TapTap 开放能力（分享板/成就/云存档/排行榜/支付/小组件/对战）、`updateManager` 与 host DPR 拆分仍未验收。
 
 ## 7. 后续阶段（Phase 2–4 待办）
 
 - Phase 2：`USAGE`/`README` 中的 TapTap 导出与上传步骤（`taptap-cli` 上传开发测试包 + 后台扫码），以及可选的 `parallelPreloadSubpackages` 启动优化。
 - Phase 3：按 Unity Wrapper 语义实现 TapTap 特有能力的 GDScript + JS bridge，逐项真机核对签名。
-- Phase 4：官网/文档平台矩阵更新、真机回归（iOS 高性能模式内存、音频驱动分支、`canvas` 字体）。
+- Phase 4：官网/文档平台矩阵更新、真机回归（iOS 低档机内存、iOS 上的 JS Bridge/InnerAudio、音频驱动分支、`canvas` 字体）。

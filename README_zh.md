@@ -96,7 +96,7 @@ CI 会把每个已认证版本导出到全部四个平台。插件 `v0.3.3` · E
 | 微信小游戏 | `wx` | `subpackages` | ✅ 支持 |
 | 抖音小游戏 | `tt` | `subPackages` | ✅ 支持 |
 | TikTok Mini Game Native | `TTMinis.game` | `subpackages` | 🧪 Beta：需要 TikTok 43.4.0+，每次发布前都要通过 `ttmg` 编译与真机验证 |
-| TapTap 小游戏 | `tap` | `subpackages` | 🧪 Beta：渲染、输入、JS Bridge 与 InnerAudio 已在 Android 真机验证；iOS 与 TapTap 开放能力仍需验收 |
+| TapTap 小游戏 | `tap` | `subpackages` | 🧪 Beta：渲染、输入、JS Bridge 与 InnerAudio 已在 Android 真机验证；iOS 已在 dev 1.0.40 验证渲染与输入；TapTap 开放能力仍需验收 |
 
 > [!IMPORTANT]
 > 自动化检查不能替代平台开发者工具和真机上的验收。

@@ -68,7 +68,14 @@ export const releaseData = {
           "engineWebAudio": "unsupported-host",
           "backingStore": "1x"
         },
-        "ios": "pending"
+        "ios": {
+          "rendering": "verified",
+          "input": "verified",
+          "jsBridge": "pending",
+          "innerAudio": "pending",
+          "engineWebAudio": "pending",
+          "backingStore": "1x"
+        }
       }
     }
   },
