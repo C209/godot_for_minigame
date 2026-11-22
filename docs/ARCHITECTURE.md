@@ -35,8 +35,12 @@ OutputGuard  engine pack   PlatformRuntime + GodotSDK bridge
 - `core/output_guard.gd` canonicalizes paths, keeps output outside the project,
   and only accepts an empty directory or one with a valid ownership manifest.
 - `templates/common/js/platform_runtime.js` selects one first-class provider:
-  WeChat `wx`, Douyin `tt`, or TikTok Native `TTMinis.game`. It owns provider
-  identity and exposes host capabilities.
+  WeChat `wx`, Douyin `tt`, TikTok Native `TTMinis.game`, or TapTap `tap`. It
+  owns provider identity and exposes host capabilities.
+- `templates/common/js/web_compat.js` fills the Web APIs a realm never received
+  (iOS JavaScriptCore ships no `TextEncoder`, which the TapTap host's own fetch
+  layer needs before it can read `godot.wasm.br`). Every entrypoint loads it
+  first, before `adapter.js` republishes those globals onto GameGlobal.
 - `templates/common/js/libs/sdk.js` and `MiniGameSDK.gd` own the versioned
   JavaScript/GDScript Bridge ABI handshake. Lifecycle binding starts only after
   brand, global name, ABI, and required methods match.

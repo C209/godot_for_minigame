@@ -1099,7 +1099,11 @@ const _window = {
   },
   isSecureContext: true, crossOriginIsolated: false,
   SharedArrayBuffer: globalThis.SharedArrayBuffer,
-  TextEncoder: globalThis.TextEncoder, TextDecoder: globalThis.TextDecoder,
+  // `web_compat` fills these on hosts whose realm ships no WHATWG encoding
+  // APIs (iOS JavaScriptCore). Prefer the module realm and fall back to the
+  // runtime global so a host implementation on GameGlobal is never hidden.
+  TextEncoder: globalThis.TextEncoder || _global.TextEncoder,
+  TextDecoder: globalThis.TextDecoder || _global.TextDecoder,
   URL: (() => {
     const _base = globalThis.URL;
     if (!_base) return { createObjectURL: () => "", revokeObjectURL: () => {} };
@@ -1351,6 +1355,10 @@ const _devtoolsFrameKeys = new Set(["window", "self", "top", "parent"]);
 if (_sysInfo.platform === "devtools") {
   for (const key of Object.keys(_window)) {
     if (_skipKeys.has(key) || key === "alert") continue;
+    // Never shadow a host global that we have no replacement for: publishing
+    // an `undefined` (TextEncoder on iOS, SharedArrayBuffer where unsupported)
+    // would hide the host's own implementation from later lookups.
+    if (_window[key] === undefined) continue;
     const desc = Object.getOwnPropertyDescriptor(_global, key);
     if (desc && _devtoolsFrameKeys.has(key)) continue;
     if (!desc || desc.configurable) {
@@ -1361,6 +1369,7 @@ if (_sysInfo.platform === "devtools") {
 } else {
   for (const key of Object.keys(_window)) {
     if (_skipKeys.has(key)) continue;
+    if (_window[key] === undefined) continue;
     try { _global[key] = _window[key]; } catch {}
   }
   _global.window = _window;
@@ -1466,7 +1475,18 @@ try {
     var orig = _origInstMap.get(native);
     var path = candidates[idx];
     console.log("[WASM] loading:", path);
-    return orig.call(native, path, imports).catch(function (e) {
+    var pending;
+    try {
+      pending = orig.call(native, path, imports);
+    } catch (e) {
+      // Native bridges are not obliged to return a promise: TapTap on iOS
+      // throws here synchronously, from its own fetch layer, before any
+      // rejection exists. Rethrow unchanged — retrying another candidate would
+      // replace a precise host error with an aggregate one.
+      console.warn("[WASM] " + path + " threw synchronously:", e && e.name, e && (e.message || String(e)));
+      throw e;
+    }
+    return Promise.resolve(pending).catch(function (e) {
       console.warn("[WASM] " + path + " failed:", e.name, e.message || String(e));
       return _tryLoad(native, candidates, imports, idx + 1);
     });

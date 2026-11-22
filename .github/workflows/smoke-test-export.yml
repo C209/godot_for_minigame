@@ -249,6 +249,7 @@ jobs:
             js/libs/sdk.js
             js/loader.js
             js/platform_runtime.js
+            js/web_compat.js
             js/worker/position_reporting.js
             images/logo.png
             images/background.png

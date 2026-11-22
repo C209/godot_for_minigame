@@ -44,6 +44,7 @@ func _run() -> void:
 			err == OK
 			and FileAccess.file_exists(output.path_join(Exporter.OUTPUT_MANIFEST))
 			and FileAccess.file_exists(output.path_join("js/platform_runtime.js"))
+			and FileAccess.file_exists(output.path_join("js/web_compat.js"))
 			and FileAccess.file_exists(output.path_join("engine/godot.zip"))
 			and game_config.get(expected_subpackage_field, null) is Array
 			and engine_js.contains('Module["copyFSToAdapter"]=')

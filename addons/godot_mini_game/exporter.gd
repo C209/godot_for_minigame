@@ -56,6 +56,7 @@ const COMMON_TEMPLATE_MAPPINGS := {
 	"js/image_loader.js": "js/image_loader.js",
 	"js/loader.js": "js/loader.js",
 	"js/platform_runtime.js": "js/platform_runtime.js",
+	"js/web_compat.js": "js/web_compat.js",
 	"js/worker/position_reporting.js": "js/worker/position_reporting.js",
 }
 
@@ -74,6 +75,7 @@ const TAPTAP_COMMONJS_MODULES: PackedStringArray = [
 	"js/loader.js",
 	"js/libs/sdk.js",
 	"js/platform_runtime.js",
+	"js/web_compat.js",
 ]
 
 ## File / directory names this exporter owns inside the user's output dir.
@@ -798,6 +800,7 @@ static func _required_output_files(platform: String) -> PackedStringArray:
 		"js/libs/sdk.js",
 		"js/loader.js",
 		"js/platform_runtime.js",
+		"js/web_compat.js",
 		"js/worker/position_reporting.js",
 		"project.config.json",
 		"subpacks/game.js",

@@ -172,8 +172,21 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 5. **JS Bridge 缺失（4.7.2 eval-free 模板）**：`GodotJSWrapper`/`_godot_js_wrapper_interface_get` 在 4.7.2 r1 模板整体缺失（4.6.1 内置模板有），`MiniGameSDK.get_interface` 恒为 null、整个 SDK 不可用、`inner_audio_*` 也无法调用。**r2 模板用 `javascript_eval=yes` 重建，真机 dev 1.0.37 确认 `MiniGameSDK` 可用、`inner_audio` 发声**——这是影响全平台（含微信/抖音）的模板层修复，非 TapTap 独有。
 6. **分包零字节占位**：真机 1.0.7 确认 CLI 上传接受 `engine/game.js`、`subpacks/game.js` 零字节占位。
 
+### 已定位并修复（iOS 复验待做）
+
+7. **iOS JavaScriptCore 没有 `TextEncoder`，引擎在读 wasm 时崩溃**（iOS 真机 2026-11-22 包定位）：首个 iOS 包启动到 `[WASM] loading: engine/godot.wasm.br` 后立即失败：
+
+   ```
+   [Loader] ✗ 加载失败: TypeError: undefined is not a constructor
+            (evaluating 'new TextEncoder()')
+   Stack: Response@tjapp://game-runtime/tjfs/index.js:7870:61
+          @tjapp://game-runtime/tjfs/index.js:7941:26
+   ```
+
+   出错栈全在宿主自己的 `tjfs`（TapTap 的 fetch / 文件系统层）：`WXWebAssembly.instantiate("engine/godot.wasm.br")` 内部用 `fetch` 读文件、构造 `Response` 时 `new TextEncoder()`。iOS 上 TapTap 跑在 **JavaScriptCore**（WKWebView 的 JSContext）里，`TextEncoder` / `TextDecoder` 属于 WebCore 注入的绑定、纯 JSC 环境没有，于是宿主这条读文件路径在 iOS 上整体不可用；Android（V8）有实现，所以此前 1.0.4–1.0.37 从未暴露。注意宿主是**同步抛错**（先构造 `Response` 再返回 promise），所以日志里没有 adapter 的 `[WASM] … failed:` 重试行——现在 adapter 会先打印 `[WASM] … threw synchronously:` 并原样抛出，不再用聚合错误覆盖宿主原因。**修复**：新增 `templates/common/js/web_compat.js`，在入口最前面（早于 `adapter.js`）做特性检测补齐 `TextEncoder` / `TextDecoder` / `atob` / `btoa` 并发布到 `globalThis` 与 `GameGlobal` 两个 realm；adapter 也不再把自己取到的 `undefined` 覆盖到宿主全局上（此前 `window` → `GameGlobal` 复制会把宿主已有的实现盖成 `undefined`）。产物里会打印 `[Compat] platform=taptap 编码 API: TextEncoder=polyfill …` 与 `[Compat] 宿主全局快照: …`，下一次真机日志可据此确认修复生效，并直接看到还有哪些宿主 API 缺失。
+
 ### 仍待验证 / 已知限制
-- **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现（本次为 Android 真机，iOS 未测）。
+- **iOS 高性能模式内存**：Godot 引擎 + 资源在 iOS <1G 内存约束下的表现（Android 真机已验；iOS 目前只跑到 wasm 装载阶段，`TextEncoder` 修复待复验）。
 - **引擎 WebAudio 混音不可用（宿主限制）**：`tap.createWebAudioContext()` 存在、驱动可初始化（`init channels=2`/`script_create ok`/`script_start ok`、不再报 driver failed），但宿主从不回调 `onaudioprocess`（计数恒 0），引擎混音拿不到时间片。**请用 `inner_audio_*` 播预编码音频（真机 1.0.37 已确认发声）**，引擎 `AudioStreamGenerator` 视为静音。
 - **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
 - **DPR 仍 1x**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。
@@ -193,12 +206,14 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 | 8 | `support-matrix.json`：`platformContracts.taptap`（`supportTier: beta`）+ 每行 `platforms.taptap: automated` | ✅ |
 | 9 | 自动测试：`tap_platform_smoke.test.mjs`、`entry_platform`、`platform_runtime`、`exporter_platform_contract`、`release_contract`、CI `taptap` 校验分支 | ✅ |
 | 10 | `MiniGameSDK.gd` TapTap 特有 API（分享板/成就/云存档/排行榜/支付/首页小组件/对战） | ⏳ Phase 3 |
-| 11 | 导出器 taptap 分支：7 个共享模块 ESM→CommonJS 转换，转换失败即中止导出 | ✅ 真机问题修复 |
+| 11 | 导出器 taptap 分支：8 个共享模块 ESM→CommonJS 转换，转换失败即中止导出 | ✅ 真机问题修复 |
+| 12 | `templates/common/js/web_compat.js`：iOS JSC 缺失的 `TextEncoder`/`TextDecoder` 补齐，入口最先加载 | ✅ 待 iOS 复验 |
 
 ### 关键实现决策
 
 - **宿主同时暴露 `wx` 兼容别名，`tap` 必须在自动探测中优先**：真机日志显示 TapTap 启动时会 `run tj-proxy.js` / `use a new namespace: tap`，同时向全局注入 `wx` 与 `WXWebAssembly`。若按「wx 优先」探测，会被误判为微信并且错误安装 WXWebAssembly 路径 shim（真机 1.0.6 即因此报 `TapTap entrypoint requires taptap, but detected wechat`）。因此 `platform_runtime` 的自动优先级为 `tap` → `TTMinis.game` → `wx` → `tt`；显式 `GameGlobal.__platform` 仍然最优先。
-- **TapTap 不支持 ES Module，导出时转 CommonJS**：真机 1.0.5（首个完整引擎包）启动即报 `SyntaxError: Cannot use import statement outside a module`——运行时把 `game.js` 当普通脚本解析。官方 Unity SDK 的 `Editor/.Babel` 会在打包时用 `@babel/preset-env` 把整包转成 CommonJS，说明 `require` 才是平台支持的模块系统。导出器对 taptap 的 7 个共享模块（`game.js` / `adapter.js` / `fetch.js` / `js/loader.js` / `js/libs/sdk.js` / `js/image_loader.js` / `js/platform_runtime.js`）做机械 ESM→CJS 转换：`import` → `require(...)`、`export default` → `module.exports.default`、具名导出 → `exports.x = x`；遇到无法识别的语法直接让导出失败，不产出坏包。`js/libs/godot.js` 本身是 UMD，保持原样（由 loader `require` 执行，尾部的 `GameGlobal.Engine` 注入仍生效）。
+- **TapTap 不支持 ES Module，导出时转 CommonJS**：真机 1.0.5（首个完整引擎包）启动即报 `SyntaxError: Cannot use import statement outside a module`——运行时把 `game.js` 当普通脚本解析。官方 Unity SDK 的 `Editor/.Babel` 会在打包时用 `@babel/preset-env` 把整包转成 CommonJS，说明 `require` 才是平台支持的模块系统。导出器对 taptap 的 8 个共享模块（`game.js` / `adapter.js` / `fetch.js` / `js/loader.js` / `js/libs/sdk.js` / `js/image_loader.js` / `js/platform_runtime.js` / `js/web_compat.js`）做机械 ESM→CJS 转换：`import` → `require(...)`、`export default` → `module.exports.default`、具名导出 → `exports.x = x`；遇到无法识别的语法直接让导出失败，不产出坏包。`js/libs/godot.js` 本身是 UMD，保持原样（由 loader `require` 执行，尾部的 `GameGlobal.Engine` 注入仍生效）。
+- **宿主运行时也吃我们补的全局（iOS 必须在入口最前面补）**：iOS 的 `TypeError: … new TextEncoder()` 来自宿主 `tjfs` 的 `Response`，不是我们的 `fetch.js`——说明宿主模块解析的是同一个 `globalThis`，所以补齐要发生在任何宿主能力调用之前，且必须同时写 `globalThis` 与 `GameGlobal`。同时 adapter 曾把 `_window.TextEncoder`（在 iOS 上是 `undefined`）复制到 `GameGlobal`，等于把宿主的实现盖掉；现在复制循环跳过 `undefined`，`_window.TextEncoder/TextDecoder` 也优先取宿主已有的实现。
 - **TapTap 的 WebGL2 只有 Unity 需要的子集**：真机 1.0.8/1.0.9 连续暴露 `getSyncParameter`、`uniform1ui` 缺失（宿主是自研 Chromium Webglhost）。除引擎侧给 `_glGetSynciv`/`_glFenceSync`/`_glDeleteSync` 加守卫外，adapter 还加了 `_installWebGLCompat`：只填补宿主缺失的 WebGL2 方法（setter→no-op、create*→`{}`、getter→null/0、is*→false、`checkFramebufferStatus`→36053），并一次性打印缺失清单与 `WebGL caps`（version/vao/uniform1ui/instanced/uniformBuffer）。若清单里出现 `drawArraysInstanced`/`drawElementsInstanced` 等绘制路径，需要再评估。
 - **音频驱动的失败点是 `destination.channelCount`**：真机 1.0.9 日志 `scriptProcessor=function, worklet=undefined, destination.channelCount=undefined`。Godot 的 `GodotAudio.init()` 直接返回 `ctx.destination.channelCount`，undefined 会被判为无效声道数从而放弃驱动（`All audio drivers failed`）。adapter 现在用 Proxy 把 `destination.channelCount`/`maxChannelCount` 兜底为 2（不改原生对象，避免 defineProperty 失败）。
 - **TapTap 的 WebGL2 上下文缺少 sync 对象方法**：真机 1.0.8 启动到 `callMain` 时报 `TypeError: GLctx.getSyncParameter is not a function`（`_glGetSynciv` 未做存在性判断）。导出器给 `_glGetSynciv` / `_glFenceSync` / `_glDeleteSync` 加了方法存在性守卫；宿主实现了这些方法时行为与上游完全一致，缺失时安全跳过。该守卫对所有平台生效，不会改变微信/抖音/TikTok 路径。

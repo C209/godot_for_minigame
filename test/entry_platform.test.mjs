@@ -40,6 +40,7 @@ async function importEntrypoint(entryPlatform, availablePlatform) {
     }
   `);
   let source = read(`${entryPlatform}/game.js`);
+  source = replaceSpecifier(source, "./js/web_compat", emptyModuleUrl);
   source = replaceSpecifier(source, "./adapter", emptyModuleUrl);
   source = replaceSpecifier(source, "./fetch", emptyModuleUrl);
   source = replaceSpecifier(source, "./js/loader", loaderStubUrl);

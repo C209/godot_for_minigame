@@ -156,6 +156,16 @@ for (const [platform, expected] of [
     entry.includes(`PlatformRuntime.requirePlatform("${expected}"`),
     `${platform} entrypoint must reject the wrong provider`,
   );
+  // iOS JavaScriptCore has no TextEncoder, and the adapter copies
+  // globalThis.TextEncoder onto GameGlobal for the host and the engine glue.
+  // Filling it after the adapter would publish `undefined` instead.
+  const compatImport = entry.indexOf('import "./js/web_compat"');
+  const adapterImport = entry.indexOf('import "./adapter"');
+  assert.ok(compatImport !== -1, `${platform} entrypoint must load the host API fill`);
+  assert.ok(
+    adapterImport === -1 || compatImport < adapterImport,
+    `${platform} entrypoint must fill host APIs before the adapter publishes them`,
+  );
 }
 
 const buildWorkflow = read(".github/workflows/build-template.yml");

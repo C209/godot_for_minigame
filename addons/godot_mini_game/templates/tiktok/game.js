@@ -1,3 +1,4 @@
+import "./js/web_compat";
 import "./adapter";
 import "./fetch";
 import Loader from "./js/loader";

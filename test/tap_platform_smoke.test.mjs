@@ -141,6 +141,20 @@ async function testTapAdapterFetchLoaderAndSdkImports() {
   );
   assert.equal(counters.nativeInstantiateCalls(), 0);
 
+  // The iOS bridge throws synchronously from inside its fetch layer. That error
+  // must reach the caller unchanged: retrying the next candidate would replace
+  // the host's own message (e.g. `new TextEncoder() is not a constructor`).
+  assert.throws(
+    () => globalThis.WebAssembly.instantiateStreaming({}, {}),
+    /native instantiate is not exercised during import/,
+    "a synchronous native throw must surface unchanged",
+  );
+  assert.equal(
+    counters.nativeInstantiateCalls(),
+    1,
+    "the failing candidate must not be retried after a synchronous throw",
+  );
+
   // Non-TikTok hosts keep the established 1x backing store until they are
   // device-certified for the DPR split.
   assert.equal(globalThis.GameGlobal.__adapter.window.innerWidth, 360);

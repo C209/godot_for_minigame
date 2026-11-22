@@ -138,6 +138,15 @@ func _init() -> void:
 				and tap_entry.contains('require("./js/loader.js").default;'),
 				"TapTap entry must use CommonJS requires",
 			)
+			# iOS JavaScriptCore ships no TextEncoder, and the adapter republishes
+			# whatever it finds. The fill has to run first, through require().
+			_assert_true(
+				tap_entry.contains('require("./js/web_compat.js");')
+				and (
+					tap_entry.find('require("./js/web_compat.js");')
+					< tap_entry.find('require("./adapter.js");')),
+				"TapTap entry must fill host APIs before adapter.js",
+			)
 			var tap_sdk := _read(output.path_join("js/libs/sdk.js"))
 			_assert_true(
 				tap_sdk.contains('require("../platform_runtime.js")')
