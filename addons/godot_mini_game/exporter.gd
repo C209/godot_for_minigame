@@ -1808,7 +1808,16 @@ func _patch_godot_js(path: String, platform: String = "wechat") -> Error:
 			_log("  [color=yellow]godot.js 不含 ScriptProcessor 连接锚点，跳过[/color]")
 
 		var _audio_start_old := "function _godot_audio_script_start(p_in_buf,p_in_size,p_out_buf,p_out_size,p_cb){const onprocess=GodotRuntime.get_func(p_cb);GodotAudioScript.start(p_in_buf,p_in_size,p_out_buf,p_out_size,onprocess)}"
-		var _audio_start_new := "function _godot_audio_script_start(p_in_buf,p_in_size,p_out_buf,p_out_size,p_cb){const onprocess=GodotRuntime.get_func(p_cb);console.log(\"[Audio] script_start called\");try{var counted=function(){GodotAudioScript._callbacks=(GodotAudioScript._callbacks||0)+1;onprocess()};GodotAudioScript.start(p_in_buf,p_in_size,p_out_buf,p_out_size,counted);console.log(\"[Audio] script_start ok\");setTimeout(function(){console.log(\"[Audio] onaudioprocess callbacks=\"+(GodotAudioScript._callbacks||0))},3000)}catch(e){console.log(\"[Audio] script_start threw: \"+e)}}"
+		# The callback counter alone says "not driven", not why. Two extra probes
+		# answer it in one device pass, on both platforms:
+		#   clock  - does ctx.currentTime advance? A frozen clock means the host
+		#            never runs a Web audio render thread at all.
+		#   source - does a one-shot BufferSource fire onended? If the graph renders
+		#            anything, this fires even when ScriptProcessor is starved.
+		# Both are read-only one-shots (0.5s silent buffer + an unconnected
+		# ScriptProcessor for the default bufferSize), so a healthy host logs two
+		# extra lines and behaves exactly as before.
+		var _audio_start_new := "function _godot_audio_script_start(p_in_buf,p_in_size,p_out_buf,p_out_size,p_cb){const onprocess=GodotRuntime.get_func(p_cb);console.log(\"[Audio] script_start called\");try{var counted=function(){GodotAudioScript._callbacks=(GodotAudioScript._callbacks||0)+1;onprocess()};GodotAudioScript.start(p_in_buf,p_in_size,p_out_buf,p_out_size,counted);console.log(\"[Audio] script_start ok\");var _actx=GodotAudio.ctx;var _clock0=_actx.currentTime;var _wall0=Date.now();setTimeout(function(){console.log(\"[Audio] onaudioprocess callbacks=\"+(GodotAudioScript._callbacks||0))},3000);setTimeout(function(){try{console.log(\"[Audio] 探针 clock: ctx.currentTime +\"+(_actx.currentTime-_clock0).toFixed(3)+\"s / wall \"+(Date.now()-_wall0)+\"ms\");var _sp=null;try{_sp=_actx.createScriptProcessor(0,2,2)}catch(_spErr){}console.log(\"[Audio] 探针 caps: 默认 bufferSize=\"+(_sp?_sp.bufferSize:\"n/a\")+\", baseLatency=\"+_actx.baseLatency+\", outputLatency=\"+_actx.outputLatency+\", state=\"+_actx.state);if(_sp){try{_sp.disconnect()}catch(_dErr){}}}catch(_e){console.log(\"[Audio] 探针 caps 失败: \"+_e)}},3000);setTimeout(function(){try{var _src=_actx.createBufferSource();_src.buffer=_actx.createBuffer(1,Math.max(1,Math.floor(_actx.sampleRate*0.5)),_actx.sampleRate);_src.onended=function(){console.log(\"[Audio] 探针 source: onended 已触发\")};_src.connect(_actx.destination);_src.start(0);console.log(\"[Audio] 探针 source: started, 0.5s\")}catch(_e){console.log(\"[Audio] 探针 source: 失败 \"+_e)}},2000)}catch(e){console.log(\"[Audio] script_start threw: \"+e)}}"
 		if content.find(_audio_start_old) != -1:
 			content = content.replace(_audio_start_old, _audio_start_new)
 			modified = true
