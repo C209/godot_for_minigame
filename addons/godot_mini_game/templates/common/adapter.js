@@ -397,6 +397,11 @@ console.log(
   + ", client=" + _mainCanvas.clientWidth + "x" + _mainCanvas.clientHeight
   + ", style=" + (_mainCanvas.style && _mainCanvas.style.width)
   + "x" + (_mainCanvas.style && _mainCanvas.style.height)
+  // Whether the backing store matches the host DPR is invisible above: a 1x
+  // buffer on a 3x screen logs the same numbers as a correct HiDPI buffer.
+  // Print both the effective and the host-reported ratio so the next device log
+  // settles the DPR question without another round trip.
+  + ", dpr=" + _dpr + " (host=" + _hostDpr + ")"
   + ", GameGlobalIsCanvas=" + (_global.canvas === _mainCanvas),
 );
 _safeDefine(_mainCanvas, "tabIndex", -1);
@@ -1438,6 +1443,50 @@ if (_global.canvas && _global.canvas !== _mainCanvas) {
     _safeDefine(_window, "requestAnimationFrame", fallback);
     try { globalThis.requestAnimationFrame = fallback; } catch (_) {}
   }, 2000);
+})();
+
+// ── Frame pacing probe (TapTap only) ─────────────────────────────
+// Frame rate and low-end memory are the two TapTap capabilities with no data
+// yet, and neither shows up in any existing log line. Count rAF callbacks in two
+// windows (startup, then steady state), report the slowest frame as well as the
+// average, then detach: the probe adds one increment per frame and never keeps
+// running. Other platforms stay untouched until their own pass needs it.
+(function () {
+  if (PlatformRuntime.platform !== "taptap") return;
+  const raf = _window.requestAnimationFrame || globalThis.requestAnimationFrame;
+  if (typeof raf !== "function") {
+    console.log("[Perf] 宿主无 requestAnimationFrame，跳过帧率采样");
+    return;
+  }
+  const _windows = [[5000, "启动期 0-5s"], [30000, "稳态 5-35s"]];
+  let _index = 0;
+  let _frames = 0;
+  let _windowStart = Date.now();
+  let _lastFrame = _windowStart;
+  let _worstGap = 0;
+  const _tick = () => {
+    const now = Date.now();
+    _frames += 1;
+    const gap = now - _lastFrame;
+    if (gap > _worstGap) _worstGap = gap;
+    _lastFrame = now;
+    const elapsed = now - _windowStart;
+    const [target, label] = _windows[_index];
+    if (elapsed >= target) {
+      const fps = (_frames * 1000 / elapsed).toFixed(1);
+      console.log(
+        "[Perf] 帧率 " + label + ": " + fps + " fps (" + _frames + " 帧 / "
+        + elapsed + " ms), 最慢帧 " + _worstGap + " ms",
+      );
+      _index += 1;
+      if (_index >= _windows.length) return;
+      _frames = 0;
+      _worstGap = 0;
+      _windowStart = now;
+    }
+    try { raf(_tick); } catch (_) {}
+  };
+  try { raf(_tick); } catch (_) {}
 })();
 
 console.log("[Adapter] ✓ 适配层初始化完成, canvas:", _mainCanvas.width + "x" + _mainCanvas.height);

@@ -291,6 +291,7 @@ class Loader {
     this._syncTimer = null;
     this._syncPromise = null;
     this._hideSyncPending = false;
+    this._syncReported = false;
     this._hideSyncHandler = null;
     this._loadingResizeHandler = null;
     this._loadingSurfaceCleaned = false;
@@ -446,16 +447,16 @@ class Loader {
     try {
       console.log("[Loader] ▶ 开始加载流程");
 
-      console.log("[Loader] 1/6 加载图片资源...");
+      console.log("[Loader] 1/7 加载图片资源...");
       await Promise.all([waitForImage(this.bgImage), waitForImage(this.logoImage)]);
       this._assertNotDisposed();
 
-      console.log("[Loader] 2/6 图片加载完成，开始加载引擎子包...");
+      console.log("[Loader] 2/7 图片加载完成，开始加载引擎子包...");
       this._step();
       await this.loadSubpackages();
       this._assertNotDisposed();
 
-      console.log("[Loader] 3/6 子包加载完成，初始化引擎...");
+      console.log("[Loader] 3/7 子包加载完成，初始化引擎...");
       this._step();
       const _Engine = _global.Engine || globalThis.Engine || null;
       console.log("[Loader]     Engine 类:", _Engine ? "已找到" : "未找到!");
@@ -703,6 +704,14 @@ class Loader {
         this._hideSyncPending = false;
         try { result = await godotSdk.syncfs(); }
         catch (error) { console.error(`[sync:${currentReason}]`, error); result = false; }
+        // Silence after startup currently means either "nothing to write" or
+        // "writeback never reached the host" — indistinguishable on device.
+        // Report the first success once; the next launch's restore count then
+        // proves the channel end to end.
+        if (result && !this._syncReported) {
+          this._syncReported = true;
+          console.log(`[Loader] 持久化回写首次成功 (${currentReason})`);
+        }
         currentReason = "hide";
       } while (this._hideSyncPending && this.state !== "disposed");
       return result;
