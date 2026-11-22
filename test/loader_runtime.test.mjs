@@ -590,14 +590,15 @@ async function testNonZipMainPackFailsBeforeStart() {
     readdir(options) { options.success({ files: [] }); },
     // A host that decodes the pack as text (or reads the wrong path) must not
     // reach the engine: Godot would abort with an unrelated "project data"
-    // error far away from the real cause.
-    readFile(options) { options.success({ data: "not a pack" }); },
+    // error far away from the real cause. The payload is not valid base64, so
+    // every read shape has to be rejected.
+    readFile(options) { options.success({ data: "not a pack!" }); },
   });
   const loader = new fixture.Loader();
   const originalConsoleError = console.error;
   console.error = () => {};
   try {
-    await assert.rejects(loader.load(), /主包读取失败: 宿主返回了 string/);
+    await assert.rejects(loader.load(), /主包读取失败: 无法识别宿主返回的数据/);
   } finally {
     console.error = originalConsoleError;
   }
@@ -653,6 +654,111 @@ async function testEngineThatExitsDuringStartIsReportedAsFailure() {
   assert.equal(fixture.timerCount(), 0, "a dead engine must not schedule file sync");
 }
 
+async function testPackReadThroughBufferWrapper() {
+  const fixture = await loadLoaderFixture();
+  globalThis.wx.getFileSystemManager = () => ({
+    access(options) { options.success({}); },
+    mkdir(options) { options.success({}); },
+    readdir(options) { options.success({ files: [] }); },
+    // TapTap's Node shim answers with a Buffer-like wrapper rather than an
+    // ArrayBuffer, so the loader has to unwrap it instead of insisting on one
+    // class.
+    readFile(options) {
+      options.success({
+        data: { type: "Buffer", data: [0x50, 0x4b, 0x03, 0x04, 0x14, 0x00] },
+      });
+    },
+  });
+  const loader = new fixture.Loader();
+  await loader.load();
+
+  assert.deepEqual(fixture.engineCalls.copied[0], [
+    "engine/godot.zip",
+    [0x50, 0x4b, 0x03, 0x04, 0x14, 0x00],
+  ]);
+  assert.equal(loader.state, "running");
+  loader.dispose();
+}
+
+async function testPackReadFallsBackToBase64() {
+  const fixture = await loadLoaderFixture();
+  globalThis.wx.getFileSystemManager = () => ({
+    access(options) { options.success({}); },
+    mkdir(options) { options.success({}); },
+    readdir(options) { options.success({ files: [] }); },
+    readFile(options) {
+      if (options.encoding === "base64") {
+        options.success({ data: "UEsDBBQAAAAA" });
+        return;
+      }
+      // An unusable shape must not stop the loader from asking for text.
+      options.success({ data: { opaque: true } });
+    },
+  });
+  const loader = new fixture.Loader();
+  await loader.load();
+
+  assert.deepEqual(fixture.engineCalls.copied[0], [
+    "engine/godot.zip",
+    [...Buffer.from("UEsDBBQAAAAA", "base64")],
+  ]);
+  loader.dispose();
+}
+
+async function testUnrecognisedPackPayloadNamesItsShape() {
+  const fixture = await loadLoaderFixture();
+  globalThis.wx.getFileSystemManager = () => ({
+    access(options) { options.success({}); },
+    mkdir(options) { options.success({}); },
+    readdir(options) { options.success({ files: [] }); },
+    readFile(options) { options.success({ data: { opaque: true } }); },
+  });
+  const loader = new fixture.Loader();
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    await assert.rejects(
+      loader.load(),
+      /无法识别宿主返回的数据.*keys=\[opaque\]/,
+      "the failure must describe what the host returned",
+    );
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.equal(loader.state, "failed");
+  assert.equal(fixture.engineCalls.start, 0);
+}
+
+async function testPackReadThroughBlobLikeBody() {
+  const fixture = await loadLoaderFixture();
+  globalThis.wx.getFileSystemManager = () => ({
+    access(options) { options.success({}); },
+    mkdir(options) { options.success({}); },
+    readdir(options) { options.success({ files: [] }); },
+    // A host that mirrors the browser fetch surface answers with a body object
+    // instead of bytes.
+    readFile(options) {
+      options.success({
+        data: {
+          arrayBuffer() {
+            return Promise.resolve(
+              new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]).buffer,
+            );
+          },
+        },
+      });
+    },
+  });
+  const loader = new fixture.Loader();
+  await loader.load();
+
+  assert.deepEqual(fixture.engineCalls.copied[0], [
+    "engine/godot.zip",
+    [0x50, 0x4b, 0x03, 0x04, 0x14, 0x00],
+  ]);
+  loader.dispose();
+}
+
 await testWeChatCanvasSingleLoadAndDispose();
 await testLoadingBlitTracksDrawingBufferResize();
 await testLoadFailureIsObservableAndStable();
@@ -660,6 +766,10 @@ await testDisposeBeforeLoadReleasesLoadingSurface();
 await testNonZipMainPackFailsBeforeStart();
 await testNonZipMainPackBytesFailBeforeStart();
 await testEngineThatExitsDuringStartIsReportedAsFailure();
+await testPackReadThroughBufferWrapper();
+await testPackReadFallsBackToBase64();
+await testUnrecognisedPackPayloadNamesItsShape();
+await testPackReadThroughBlobLikeBody();
 await testDisposedLoaderIgnoresLateSubpackageSuccess();
 await testHideQueuesLatestSaveBehindInflightWrite();
 await testEmptyPersistentDirectoryExistsBeforeMain();

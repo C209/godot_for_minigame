@@ -56,16 +56,167 @@ function _safeSet(obj, key, value) {
   return obj[key] === value;
 }
 
-/// Host readFile() returns binary data as an ArrayBuffer or a view on one.
-/// Anything else (a decoded string, null) cannot be written into the engine's
-/// file system, so it is reported instead of silently staging an empty pack.
-function _fileBytes(data) {
-  if (!data) return null;
+/// Normalises whatever a host readFile() reports as "the bytes".
+///
+/// WeChat hands over an ArrayBuffer, TikTok a view on one, and TapTap's Node
+/// shim a Buffer-like wrapper whose shape is not documented. The engine only
+/// needs the raw bytes, so every plausible wrapper is unwrapped here instead of
+/// failing on a host-specific class name.
+function _fileBytes(data, depth = 0) {
+  if (!data || depth > 3) return null;
+  if (typeof data === "string") return null; // text is handled by _base64Bytes
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(data)) {
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
+  // Buffer serialised as plain JSON: { type: "Buffer", data: [80, 75, ...] }.
+  if (Array.isArray(data.data)) return Uint8Array.from(data.data);
+  // Cross-realm ArrayBuffer: `instanceof` fails, the internal slot does not, and
+  // the constructor throws or returns length 0 for anything that is not one.
+  const byteLength = Number(data.byteLength);
+  if (Number.isFinite(byteLength) && byteLength > 0) {
+    try {
+      const bytes = new Uint8Array(data);
+      if (bytes.byteLength === byteLength) return bytes;
+    } catch (_) { /* not an ArrayBuffer */ }
+  }
+  if (data.buffer) {
+    const nested = _fileBytes(data.buffer, depth + 1);
+    if (nested) return nested;
+  }
+  if (data.data) {
+    const nested = _fileBytes(data.data, depth + 1);
+    if (nested) return nested;
+  }
+  // Array-like of byte values: { length, 0: 80, 1: 75, ... }.
+  const length = Number(data.length);
+  if (Number.isInteger(length) && length > 0) {
+    const bytes = new Uint8Array(length);
+    for (let index = 0; index < length; index += 1) {
+      const value = data[index];
+      if (typeof value !== "number") return null;
+      bytes[index] = value;
+    }
+    return bytes;
+  }
   return null;
+}
+
+/// Wraps _fileBytes with the async shapes a host may hand back instead of
+/// bytes: a promise, a Blob-like with arrayBuffer(), or a text body.
+async function _bytesFromRead(value, depth = 0) {
+  if (!value || depth > 3) return null;
+  if (typeof value.then === "function") return _bytesFromRead(await value, depth + 1);
+  const direct = _fileBytes(value);
+  if (direct) return direct;
+  if (typeof value.arrayBuffer === "function") {
+    try { return await _bytesFromRead(await value.arrayBuffer(), depth + 1); } catch (_) {}
+  }
+  if (typeof value.text === "function") {
+    try {
+      const bytes = _base64Bytes(await value.text());
+      if (bytes) return bytes;
+    } catch (_) {}
+  }
+  if (value.data) return _bytesFromRead(value.data, depth + 1);
+  if (value.buffer) return _bytesFromRead(value.buffer, depth + 1);
+  return null;
+}
+
+/// Reads one file through the WeChat-style options object.
+function _readFileOptions(fs, filePath, extra) {
+  return new Promise((resolve, reject) => {
+    try {
+      fs.readFile(Object.assign({
+        filePath,
+        success: (result) => resolve(result && result.data),
+        fail: (error) => reject(
+          new Error((error && error.errMsg) || `readFile 失败: ${filePath}`),
+        ),
+      }, extra || {}));
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+/// Reads one file through the Node-style `readFile(path, callback)` signature.
+/// Bounded by a timeout because a host that only understands the options object
+/// silently ignores the callback.
+function _readFileNodeStyle(fs, filePath) {
+  const read = new Promise((resolve, reject) => {
+    try {
+      const maybe = fs.readFile(filePath, (error, data) => {
+        if (error) reject(error instanceof Error ? error : new Error(String(error)));
+        else resolve(data);
+      });
+      if (maybe && typeof maybe.then === "function") maybe.then(resolve, reject);
+    } catch (error) {
+      reject(error);
+    }
+  });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("readFile(path, cb) 未回调")), 4000);
+    read.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+function _base64Bytes(text) {
+  const cleaned = String(text).replace(/[\s\r\n]+/g, "");
+  if (cleaned.length < 8) return null;
+  if (typeof atob !== "function") return null;
+  try {
+    const binary = atob(cleaned);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// True when a read answered with an empty envelope (`{}`, null, or an object
+/// without bytes, length or a body method) — the usual answer for a path that
+/// does not exist in this host's namespace.
+function _isEmptyPayload(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value !== "object") return false;
+  if (value.byteLength || value.length) return false;
+  if (typeof value.arrayBuffer === "function" || typeof value.text === "function") return false;
+  try {
+    for (const key in value) {
+      if (key) return false;
+    }
+  } catch (_) { return true; }
+  return true;
+}
+
+/// One-line shape description, used only when every unwrapping path failed.
+/// `for...in` is lazy so a huge array never materialises its keys.
+function _describeValue(value) {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  const type = typeof value;
+  if (type !== "object") return type;
+  const tag = Object.prototype.toString.call(value);
+  const name = (value.constructor && value.constructor.name) || "?";
+  let keys = "";
+  let count = 0;
+  try {
+    for (const key in value) {
+      if (count >= 6) break;
+      keys += (count > 0 ? "," : "") + key;
+      count += 1;
+    }
+  } catch (_) { /* exotic proxy */ }
+  const byteLength = value.byteLength === undefined ? "-" : value.byteLength;
+  const length = value.length === undefined ? "-" : value.length;
+  return `${tag}/${name} keys=[${keys}] byteLength=${byteLength} length=${length}`;
 }
 
 if (!_global.crypto || typeof _global.crypto.getRandomValues !== "function") {
@@ -458,27 +609,77 @@ class Loader {
     await engine.preloadFile(bytes, mainPack);
   }
 
+  /// Reads the pack from the host FS.
+  ///
+  /// Confirmed shapes: WeChat returns an ArrayBuffer, TikTok a view. TapTap's
+  /// FileSystemManager delegates to a Node-shaped shim, so the payload is not a
+  /// documented class and the path may need a leading slash. Every candidate
+  /// path is tried with every call style, and a failure reports the shape each
+  /// call actually produced instead of guessing.
   async _readMainPack(mainPack) {
     const fs = _api.getFileSystemManager();
     if (!fs || typeof fs.readFile !== "function") {
       throw new Error("[Loader] 主包读取失败: 宿主缺少 FileSystemManager.readFile");
     }
-    const data = await new Promise((resolve, reject) => {
-      fs.readFile({
-        filePath: mainPack,
-        success: (result) => resolve(result && result.data),
-        fail: (error) => reject(
-          new Error((error && error.errMsg) || `readFile 失败: ${mainPack}`),
-        ),
-      });
-    });
-    const bytes = _fileBytes(data);
-    if (!bytes) {
-      throw new Error(
-        `[Loader] 主包读取失败: 宿主返回了 ${data === null ? "null" : typeof data}，需要二进制数据`,
-      );
+    const candidates = [mainPack, `/${mainPack}`];
+    const rejected = [];
+    for (const candidate of candidates) {
+      const bytes = await this._readPackFrom(fs, candidate, rejected);
+      if (bytes) return bytes;
     }
-    return bytes;
+    throw new Error(`[Loader] 主包读取失败: 无法识别宿主返回的数据 (${rejected.join(" | ")})`);
+  }
+
+  async _readPackFrom(fs, packPath, rejected) {
+    // 1. WeChat-style options object.
+    try {
+      const raw = await _readFileOptions(fs, packPath);
+      const bytes = await _bytesFromRead(raw);
+      if (bytes) return bytes;
+      rejected.push(`${packPath} binary: ${_describeValue(raw)}`);
+      // An empty envelope means the path resolved to nothing useful; the other
+      // call styles would only repeat the same answer.
+      if (_isEmptyPayload(raw)) return null;
+    } catch (error) {
+      rejected.push(`${packPath} binary: ${error && error.message}`);
+    }
+
+    // 2. Ask for base64. A string survives every fs implementation and decodes
+    //    through the atob every host (or web_compat) provides.
+    try {
+      const text = await _readFileOptions(fs, packPath, { encoding: "base64" });
+      if (typeof text === "string") {
+        const bytes = _base64Bytes(text);
+        if (bytes) return bytes;
+      }
+      rejected.push(`${packPath} base64: ${_describeValue(text)}`);
+    } catch (error) {
+      rejected.push(`${packPath} base64: ${error && error.message}`);
+    }
+
+    // 3. Node-style host fs.
+    try {
+      const raw = await _readFileNodeStyle(fs, packPath);
+      const bytes = await _bytesFromRead(raw);
+      if (bytes) return bytes;
+      rejected.push(`${packPath} node: ${_describeValue(raw)}`);
+    } catch (error) {
+      rejected.push(`${packPath} node: ${error && error.message}`);
+    }
+
+    // 4. Synchronous Node-style read, the remaining call that can hand back a
+    //    plain Buffer on a Node-shaped host.
+    if (typeof fs.readFileSync === "function") {
+      try {
+        const raw = fs.readFileSync(packPath);
+        const bytes = await _bytesFromRead(raw);
+        if (bytes) return bytes;
+        rejected.push(`${packPath} readFileSync: ${_describeValue(raw)}`);
+      } catch (error) {
+        rejected.push(`${packPath} readFileSync: ${error && error.message}`);
+      }
+    }
+    return null;
   }
 
   _flushPersistentFiles(reason) {
