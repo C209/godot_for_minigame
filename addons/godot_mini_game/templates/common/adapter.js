@@ -1458,7 +1458,9 @@ if (_global.canvas && _global.canvas !== _mainCanvas) {
     console.log("[Perf] 宿主无 requestAnimationFrame，跳过帧率采样");
     return;
   }
-  const _windows = [[5000, "启动期 0-5s"], [30000, "稳态 5-35s"]];
+  // The steady window has to fit inside a short manual session: the 1.0.41 pass
+  // lasted ~12s on iOS and ~9s on Android, so a "5-35s" window never reported.
+  const _windows = [[5000, "启动期 0-5s"], [10000, "稳态 5-15s"]];
   let _index = 0;
   let _frames = 0;
   let _windowStart = Date.now();
