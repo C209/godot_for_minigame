@@ -494,6 +494,7 @@ await test("a stat shape that never answers fails the deadline instead of hangin
     "a silent host must surface as a timeout error",
   );
   assert.ok(Date.now() - started < 2000, "the deadline settles the call instead of waiting forever");
+  assert.equal(f.sdk._statSilent.has("node"), true, "a silent shape is never asked again in this run");
 });
 
 console.log("persistence_sync.test.mjs: ok");

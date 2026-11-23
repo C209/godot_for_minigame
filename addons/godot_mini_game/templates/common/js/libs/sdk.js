@@ -4509,8 +4509,10 @@ class GodotSDK {
     // ran). So the options shape stays first (it is the one proven on iOS), every
     // attempt carries a deadline, and whichever shape answers first is reused for
     // the rest of the run.
-    const preferred = this._statStyle || "options";
-    const order = [preferred, ...["options", "node", "filePath"].filter((style) => style !== preferred)];
+    const silent = this._statSilent || (this._statSilent = new Set());
+    const preferred = this._statStyle && !silent.has(this._statStyle) ? this._statStyle : "options";
+    const order = [preferred, ...["options", "node", "filePath"]
+      .filter((style) => style !== preferred && !silent.has(style))];
     let firstError = null;
     for (const style of order) {
       try {
@@ -4519,6 +4521,10 @@ class GodotSDK {
         return result;
       } catch (error) {
         if (!firstError) firstError = error;
+        // A shape that went silent is never asked again in this run: one save
+        // directory can hold dozens of files, and each silent attempt costs a
+        // full deadline.
+        if (error && error.code === "ERR_STAT_TIMEOUT") silent.add(style);
         // A genuinely absent path is the answer, not a call-shape problem.
         if (error instanceof Error && _isMissingHostPath(error)) throw error;
       }
@@ -4533,7 +4539,9 @@ class GodotSDK {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        reject(new Error(`FileSystemManager.stat did not answer within ${timeout}ms (${style} shape)`));
+        const error = new Error(`FileSystemManager.stat did not answer within ${timeout}ms (${style} shape)`);
+        error.code = "ERR_STAT_TIMEOUT";
+        reject(error);
       }, timeout);
       const finish = (callback) => (value) => {
         if (settled) return;
