@@ -18,6 +18,9 @@ const DEMO_AUDIO_FREQUENCY := 660.0
 const DEMO_AUDIO_VOLUME := 0.28
 const DEMO_INNER_AUDIO_SRC := "audio/demo-tone.wav"
 const DEMO_LOADING_AUTO_HIDE_SECONDS := 1.0
+## Console tag for the device-only probes below. They print to stdout because the
+## on-device log only captures print(), not the on-screen result labels.
+const DEVICE_PROBE_TAG := "[Probe]"
 
 var score := 0
 var colors: Array[Color] = [
@@ -46,6 +49,7 @@ func _ready() -> void:
 
 	_build_sdk_tests()
 	_connect_sdk_signals()
+	_probe_bridge_status()
 	_log("Ready — tap buttons to test SDK features")
 
 
@@ -71,6 +75,33 @@ func _process(delta: float) -> void:
 		audio_player.stop()
 		_demo_audio_playback = null
 		audio_label.text = "Audio: Stopped"
+
+
+# ── Device probes (log-only) ────────────────────────────────────────
+
+## One line that answers "did the JavaScriptBridge come up at all?" — on
+## 4.7.2 eval-free templates it never does and every SDK call is a no-op.
+func _probe_bridge_status() -> void:
+	if not OS.has_feature("web"):
+		return
+	var tap_scope: Variant = JavaScriptBridge.get_interface("tap")
+	print("%s bridge platform=%s mini_game=%s tap=%s error=%s" % [
+		DEVICE_PROBE_TAG,
+		str(MiniGameSDK.bridge_info.get("platform", "")),
+		MiniGameSDK.is_mini_game,
+		"object" if tap_scope != null else "null",
+		MiniGameSDK.bridge_initialization_error,
+	])
+
+
+## Sample InnerAudio state after playback starts. A `play` event alone proves
+## nothing on some hosts, so log whether `currentTime` actually advances.
+func _probe_inner_audio_playback() -> void:
+	for seconds in [0.6, 1.8]:
+		var timer := get_tree().create_timer(seconds, true, false, true)
+		timer.timeout.connect(func() -> void:
+			print("%s inner_audio sample +%.1fs" % [DEVICE_PROBE_TAG, seconds])
+			MiniGameSDK.get_inner_audio_state())
 
 
 # ── Basic interactions ─────────────────────────────────────────────
@@ -150,6 +181,7 @@ func _start_mini_game_demo_audio() -> bool:
 			"playbackRate": 1.0,
 		})
 	MiniGameSDK.inner_audio_play()
+	_probe_inner_audio_playback()
 	_demo_audio_seconds_left = DEMO_AUDIO_DURATION
 	_demo_audio_native_active = true
 	_demo_audio_native_paused = false
@@ -771,12 +803,17 @@ func _connect_sdk_signals() -> void:
 			_set_result("Game Recorder", "Event %s failed: %s raw: %s" % [event_type, err, data_json.left(120)]))
 
 	MiniGameSDK.inner_audio_operation_result.connect(func(action: String, ok: bool, data_json: String, err: String) -> void:
+		print("%s inner_audio %s ok=%s data=%s err=%s" % [
+			DEVICE_PROBE_TAG, action, ok, data_json.left(160), err])
 		if err.is_empty():
 			_set_result("Inner Audio", "%s OK: %s raw: %s" % [action, ok, data_json.left(180)])
 		else:
 			_set_result("Inner Audio", "%s failed: %s" % [action, err]))
 
 	MiniGameSDK.inner_audio_event.connect(func(event_type: String, data_json: String, err: String) -> void:
+		if event_type != "timeUpdate":
+			print("%s inner_audio event %s data=%s err=%s" % [
+				DEVICE_PROBE_TAG, event_type, data_json.left(120), err])
 		if err.is_empty():
 			_set_result("Inner Audio", "Event %s: %s" % [event_type, data_json.left(160)])
 		else:

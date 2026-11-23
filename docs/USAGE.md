@@ -31,6 +31,8 @@ This guide walks through every step from install to store submission, and docume
 | Douyin DevTools | latest stable | Debug + upload Douyin mini games |
 | TikTok client | 43.4.0+ | Native `TTWebAssembly` runtime |
 | `ttmg` DevTool | 0.4.1-beta.wasm1 | Compile and debug TikTok Native packages with `ttmg dev` |
+| TapTap client | latest | Open TapTap development builds by QR code |
+| `taptap-cli` | latest | Upload mini-app packages, create development versions, generate self-test QR codes |
 
 Normal export needs no Node.js, Brotli CLI, Emscripten, or standard Godot Web
 template. A Release already contains a validated Brotli engine bundle. The
@@ -101,20 +103,30 @@ The dock sits at the bottom of the editor and contains:
 | 微信小游戏 | `wechat` template; writes `project.config.json` + `project.private.config.json` |
 | 抖音小游戏 | `douyin` template; writes the Douyin-shaped `project.config.json` |
 | TikTok Mini Game (beta) | `tiktok` Native template; uses the `TTMinis.game` namespace |
+| TapTap (beta) | `taptap` template; uses the `tap` namespace and the same three-file layout as WeChat |
 
 Platform differences:
 - WeChat `game.json` includes `iOSHighPerformance` and `workers.path` (audio worklet hookup)
 - Douyin does not declare workers
-- Douyin's case-sensitive subpackage field is `subPackages`; WeChat and TikTok
-  use lower-case `subpackages`
+- Douyin's case-sensitive subpackage field is `subPackages`; WeChat, TikTok, and
+  TapTap use lower-case `subpackages`
 - TikTok support is Native-only in v0.3. The HTML runtime and its different
   boot/configuration files are not generated
+- TapTap reuses the WeChat-shaped `project.config.json`; `appid` is the mini-app
+  App ID from the TapTap developer console
+- TapTap only accepts CommonJS at runtime: the exporter rewrites the eight shared
+  modules to `require()`, and `game.js` runs as a classic script — no Babel step needed
+- TapTap's engine bundle must be decompressed by the host `WXWebAssembly` from the
+  path `godot.wasm.br`; a standard Web export fails on device with
+  `BufferSource argument is empty`
 
 ### AppID
 
 - WeChat: the `wx...` ID from [mp.weixin.qq.com](https://mp.weixin.qq.com)
 - Douyin: the `tt...` ID from [developer.open-douyin.com](https://developer.open-douyin.com)
 - TikTok: the **Client Key** registered for the Native mini game
+- TapTap: the numeric App ID of the mini app created in the
+  [TapTap developer console](https://developer.taptap.cn)
 - WeChat/Douyin local exports may use a placeholder; uploads need a real ID.
   TikTok requires a non-empty Client Key before resource export starts.
 
@@ -146,7 +158,7 @@ Click — the dock log shows seven transactional stages:
 Step 1/7: export the resource pack to staging
 Step 2/7: copy one validated engine bundle
 Step 3/7: copy the shared JavaScript runtime
-Step 4/7: assemble WeChat, Douyin, or TikTok Native files
+Step 4/7: assemble WeChat, Douyin, TikTok Native, or TapTap files
 Step 5/7: create required package placeholders
 Step 6/7: write and verify the artifact manifest
 Step 7/7: lock, recheck, and transactionally publish
@@ -335,6 +347,95 @@ effects are silent. Play sounds through `MiniGameSDK`'s InnerAudio API
 The repository automates export, manifest, WASM, and package smoke checks for
 TikTok. Beta does not mean device-certified: a DevTool build and a real-device
 run are required before every release.
+
+### TapTap (beta)
+
+TapTap is the fourth first-class target. Its output matches the WeChat layout, but
+the runtime only accepts CommonJS, and the engine's `godot.wasm.br` must be
+decompressed by the host `WXWebAssembly` from its path. The exporter handles both;
+all you need is a certified r2 template from `support-matrix.json`.
+
+**1. Export**
+
+Pick **TapTap** in the dock, enter the mini-app App ID from the TapTap developer
+console, choose the orientation, and export into an empty folder. If the log shows
+a red "engine template's godot.js is missing JavaScriptBridge" warning, the
+template is the eval-free r1 build: every `MiniGameSDK` call will be a no-op there,
+so switch to an r2 template and export again.
+
+**2. Package**
+
+```bash
+cd /absolute/path/to/taptap-output
+zip -r ../game.zip . -x ".godot-mini-game-export.json"
+```
+
+`.godot-mini-game-export.json` is the exporter's ownership manifest, not a runtime
+artifact — it must be excluded.
+
+**3. Upload and parse**
+
+`taptap-cli` only accepts files inside the current working directory, so run it
+from the folder that holds the zip:
+
+```bash
+cd /absolute/path/to                 # the folder with game.zip
+taptap-cli auth login                # first time only
+taptap-cli upload-mini-app-package game.zip \
+  --dev-id <DEV_ID> --app-id <APP_ID> --yes --json
+```
+
+Keep the returned `artifact_id` and `task_id`. Parsing is asynchronous, so poll:
+
+```bash
+taptap-cli package-management get-mini-app-package-upload-status \
+  --dev-id <DEV_ID> --app-id <APP_ID> --data '{"artifact_id": <ARTIFACT_ID>}'
+```
+
+**4. Create a development version**
+
+```bash
+taptap-cli package-management submit-mini-app-package \
+  --dev-id <DEV_ID> --app-id <APP_ID> \
+  --data '{"artifact_id": <ARTIFACT_ID>, "task_id": "<TASK_ID>", "enable_split": false, "package_version": "1.0.0"}' \
+  --yes --json
+```
+
+`enable_split` stays `false`: the CLI only supports single-package uploads; use the
+web console when you need splitting. The returned `package_id` is this development
+version.
+
+**5. Self-test QR code**
+
+```bash
+taptap-cli test-qr-code --dev-id <DEV_ID> --app-id <APP_ID> \
+  --data '{"package_id": <PACKAGE_ID>}' -o qr.png
+```
+
+Scan it with the TapTap client to open the development build. The scanning account
+needs test or developer access to the mini app.
+
+**Known limits (beta)**
+
+- **No engine audio mixer on Android**: the host `WebAudioContext` ships an
+  incomplete ScriptProcessor node (no `onaudioprocess` callback, no `bufferSize`,
+  no AudioWorklet), so `AudioStreamGenerator`, Stream-mode playback, and bus
+  effects stay silent. Use the InnerAudio API (`create_inner_audio_context()`,
+  `inner_audio_play()`, and friends) on every platform. Engine audio works on iOS.
+- **No system fonts on the canvas**: ship a font and load it through the host
+  `tap.loadFont`, otherwise text does not render.
+- **Rendering stays at 1x backing store**: `devicePixelRatio` is pinned to 1, so 3x
+  and 3.5x screens look softer than native. DPR configuration is not exposed yet.
+- The package limit is **60 MB** compressed, and `game.json` stays minimal — no
+  `plugins`, no `workers`.
+- Subpackage placeholders follow the WeChat/Douyin zero-byte behavior; the CLI
+  accepts empty `engine/game.js` and `subpacks/game.js`.
+- **TapTap-only capabilities are not wrapped yet**: share board, achievements,
+  cloud saves, leaderboards, payments, home-screen widgets, and multiplayer have no
+  GDScript API in v0.3.2. `MiniGameSDK` currently covers the API surface that is
+  isomorphic with WeChat/Douyin.
+- Beta does not mean device-certified: run every release candidate on a real
+  device (see section 11).
 
 ### Common first-run errors
 
@@ -1740,6 +1841,12 @@ First time a Web-published game becomes a mini-game, `user://` is empty — the 
   key-value persistence, and login. Public file-system writes must report
   unsupported without reaching the host; the repository's export smoke is not
   device certification.
+- TapTap → upload a development build with `taptap-cli` and scan the QR code
+  (section 7). Read the log in three blocks — `[Compat]`, `[Loader]`, `[Perf]`:
+  `[Compat] platform=taptap` proves the entry patches ran, and only `7/7` plus
+  `✓ 加载完成` means the engine actually started; `已恢复 N 条` is the persistence
+  restore. Android can only verify InnerAudio, while iOS can verify both the engine
+  mixer and InnerAudio.
 - Real-device black screen is almost always one of:
   1. WASM incompat → you picked the standard Web template. Swap to a compatible one.
   2. `GameGlobal.canvas` acquisition failed → base library < 3.0. Upgrade WeChat or pin the base library version.
@@ -1859,6 +1966,10 @@ A: Simulator yes, real device usually CompileError. `WXWebAssembly` lacks SIMD a
 
 A: We neutralised `connectPositionWorklet` for host compatibility, so the engine loses sample-accurate playback position. Impact on 2D / 3D spatial audio is tiny; if you need exact audio sync, you'll have to wait for mini-game hosts to expose proper `AudioWorkletNode`.
 
+### Q: Why is there no sound on TapTap?
+
+A: Check the platform first. The Android host has neither a working ScriptProcessor nor AudioWorklet, so Godot's engine mixer stays silent — play sounds through `MiniGameSDK`'s InnerAudio API. On iOS both the engine mixer and InnerAudio work. InnerAudio also needs a user gesture on iOS; autoplay at startup gets blocked by the mute policy.
+
 ### Q: How do I test the SDK inside the editor?
 
 A: Run the scene normally — `is_mini_game` returns `false`, every method is a safe no-op. For more precise stubbing, inject a fake into `MiniGameSDK._sdk` in your tests, or branch on `OS.has_feature("web")`.
@@ -1871,7 +1982,7 @@ A: Prefix your keys with an account id, e.g. `"user:%s:level" % openid`. `wx.set
 
 A: Please use [issues](https://github.com/AnranS/godot_for_minigame/issues) and [discussions](https://github.com/AnranS/godot_for_minigame/discussions). Bug reports benefit from:
 - Godot version
-- Platform (WeChat / Douyin / TikTok Native)
+- Platform (WeChat / Douyin / TikTok Native / TapTap)
 - Base library version
 - Dock export log screenshot
 - DevTools or on-device Vconsole log

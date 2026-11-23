@@ -1,6 +1,6 @@
 # TapTap 平台移植契约（Phase 0 预研产出）
 
-> 状态：Phase 1 已落地（tap provider + templates/taptap 三件套 + support-matrix/exporter/output_guard/dock 接入 + 自动测试）。
+> 状态：Phase 1 已落地（tap provider + templates/taptap 三件套 + support-matrix/exporter/output_guard/dock 接入 + 自动测试）；Phase 2 文档已完成（USAGE/USAGE_zh 补齐导出与 `taptap-cli` 上传流程）。
 > 目标是把 `tap` 平台作为 godot_for_minigame 的第四平台接入。
 > 参考项目：`C:\Work\Unity\Tools\minigame-sdk-unity`（com.taptap.minigame v2.0.21，TapTap 提供给团结引擎 Tuanjie 的 SDK）。
 > 证据来源：TapTap 官方文档 developer.taptap.cn/minigameapidoc + 本地 Unity SDK 源码。
@@ -198,6 +198,12 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 9. **TapTap 的 `readFile` 回调不是二进制**（iOS 真机 1.0.39 定位）：上一条改成自己读包后立刻暴露 `[Loader] 主包读取失败: 宿主返回了 object，需要二进制数据`。TapTap 的 `FileSystemManager` 把一部分调用交给 Node 风格 shim（`stat` 就必须用 `(path, cb)`），`readFile` 的 `data` 既不是 `ArrayBuffer` 也不是 TypedArray，无法直接写进引擎 FS。**修复**：主包读取改为「多形状 + 多路径」——依次尝试 WeChat options、`encoding:"base64"`（用 atob 解码）、Node 风格 `readFile(path, cb)`（4 秒超时）、`readFileSync`，每条路径都先试 `engine/godot.zip` 再试 `/engine/godot.zip`；返回值用 `_fileBytes` / `_bytesFromRead` 递归解包（同/跨 realm 的 ArrayBuffer、TypedArray、`{type:"Buffer",data:[…]}`、`{buffer}`、`{data}`、array-like、promise、`arrayBuffer()/text()` body）；空 envelope 视为该路径无效并换下一个。全部失败时把每次调用的返回值形状（`[object X]/Ctor keys=[…] byteLength length`）写进错误。成功时会打印 `[Loader] 主包读取方式: <options|base64|node|readFileSync> (<path>)`，便于后续按平台固化路径。**dev 1.0.40 起 iOS 正常进入游戏界面，`Tap to Score` 点击生效**（渲染 + 输入同时确认）。
 
 ### 仍待验证 / 已知限制
+- **iOS 的 JS Bridge 与 InnerAudio 待确认（dev 1.0.44 起带探针）**：demo `scripts/main.gd` 启动时打印
+  `[Probe] bridge platform=… mini_game=… tap=object|null error=…`；按主界面 Play 后，0.6s / 1.8s 各打印一次
+  `[Probe] inner_audio sample +…s`，随后是 `[Probe] inner_audio getState data=…`，`play` / `ended` 事件也各打一行。
+  判据：`tap=object` 且 `mini_game=true` → iOS JS Bridge 通过；`currentTime` 随采样点推进（+0.6s ≈ 0.6、+1.8s ≈ 1.8）、
+  `paused=false`、并收到 `ended` → InnerAudio 通路成立（是否真的出声仍需耳朵确认）。两项都通过后，把
+  `support-matrix.json` 的 `ios.jsBridge` / `ios.innerAudio` 改成 `verified`。
 - **iOS 低档机内存**：dev 1.0.40 已在 iPhone 上跑通 demo（渲染/输入），但 <1G 内存低档机与长时间运行的内存表现仍未压测。
 - **引擎 WebAudio 混音按平台分裂，归因已由探针证实（dev 1.0.41 双平台）**：iOS 可用、Android 不可用，且 Android 的故障点已收敛到 **ScriptProcessor 这一个节点**（不是整条音频流水线）：
 
@@ -253,6 +259,6 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 
 ## 7. 后续阶段（Phase 2–4 待办）
 
-- Phase 2：`USAGE`/`README` 中的 TapTap 导出与上传步骤（`taptap-cli` 上传开发测试包 + 后台扫码），以及可选的 `parallelPreloadSubpackages` 启动优化。
+- Phase 2（已完成）：`USAGE` / `USAGE_zh` 的 TapTap 导出与上传步骤（`taptap-cli` 上传开发测试包 + 后台扫码）已补齐；可选的 `parallelPreloadSubpackages` 启动优化仍未启用。
 - Phase 3：按 Unity Wrapper 语义实现 TapTap 特有能力的 GDScript + JS bridge，逐项真机核对签名。
 - Phase 4：官网/文档平台矩阵更新、真机回归（iOS 低档机内存、iOS 上的 JS Bridge/InnerAudio、音频驱动分支、`canvas` 字体）。

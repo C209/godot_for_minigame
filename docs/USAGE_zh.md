@@ -12,7 +12,7 @@
 - [4. 导出 Dock 详解](#4-导出-dock-详解)
 - [5. 引擎模板管理](#5-引擎模板管理)
 - [6. 导出产物结构](#6-导出产物结构)
-- [7. 微信 / 抖音 / TikTok 开发者工具导入](#7-微信--抖音--tiktok-开发者工具导入)
+- [7. 微信 / 抖音 / TikTok / TapTap 开发者工具导入](#7-微信--抖音--tiktok--taptap-开发者工具导入)
 - [8. MiniGameSDK 详细用法](#8-minigamesdk-详细用法)
 - [9. 资源与子包策略](#9-资源与子包策略)
 - [10. 本地存储与云端同步](#10-本地存储与云端同步)
@@ -31,6 +31,8 @@
 | 抖音开发者工具 | latest stable | 调试/上传抖音小游戏 |
 | TikTok 客户端 | 43.4.0+ | Native `TTWebAssembly` 运行时 |
 | `ttmg` DevTool | 0.4.1-beta.wasm1 | 通过 `ttmg dev` 编译与调试 TikTok Native 工程 |
+| TapTap 客户端 | 最新版 | 扫码打开 TapTap 开发版本 |
+| `taptap-cli` | latest | 上传小游戏包体、创建开发版本、生成自测二维码 |
 
 日常导出不需要 Node.js、Brotli CLI、Emscripten 或 Godot 标准 Web 模板。
 Release 已包含经过验证的 Brotli 引擎包；编译与验证工具只属于维护者依赖，见第 12 节。
@@ -98,18 +100,23 @@ Dock 位于编辑器底部，依次包含以下字段：
 | 微信小游戏 | 导出 `wechat` 模板，生成 `project.config.json` + `project.private.config.json` |
 | 抖音小游戏 | 导出 `douyin` 模板，生成抖音用的 `project.config.json` |
 | TikTok Mini Game（beta） | 导出 `tiktok` Native 模板，使用 `TTMinis.game` 命名空间 |
+| TapTap 小游戏（beta） | 导出 `taptap` 模板，使用 `tap` 命名空间；三件套结构与微信同构 |
 
 平台差异：
 - 微信的 `game.json` 多了 `iOSHighPerformance` 与 `workers.path`（用于音频 worklet）
 - 抖音目前不启用 workers
-- 抖音大小写敏感的分包字段是 `subPackages`；微信与 TikTok 使用小写 `subpackages`
+- 抖音大小写敏感的分包字段是 `subPackages`；微信、TikTok 与 TapTap 使用小写 `subpackages`
 - v0.3 的 TikTok 支持仅覆盖 Native runtime，不生成启动与配置契约不同的 HTML runtime
+- TapTap 复用微信形态的 `project.config.json`，`appid` 填 TapTap 后台的小游戏 App ID
+- TapTap 运行时只接受 CommonJS：导出器会把 8 个共享模块转成 `require()` 形式，`game.js` 以普通脚本执行，不需要 Babel 预处理
+- TapTap 的引擎包必须经宿主 `WXWebAssembly` 按路径解压 `godot.wasm.br`，标准 Web 模板直接上真机会报 `BufferSource argument is empty`
 
 ### AppID
 
 - 微信：在 [微信公众平台](https://mp.weixin.qq.com) 注册小游戏后获得的 `wx...` ID。
 - 抖音：在 [抖音开放平台](https://developer.open-douyin.com) 获得的 `tt...` ID。
 - TikTok：为 Native Mini Game 注册的 **Client Key**。
+- TapTap：在 [TapTap 开发者中心](https://developer.taptap.cn) 创建小游戏后获得的 App ID（数字）。
 - 微信、抖音本地联调可填占位值，上传时必须是真实 AppID。TikTok 在资源导出前
   会检查 Client Key，不能为空。
 
@@ -139,7 +146,7 @@ Dock 自动扫描 `export_presets.cfg` 里的所有预设，选择第 3 步创�
 步骤 1/7: 在 staging 导出资源包
 步骤 2/7: 复制一个经过验证的完整引擎包
 步骤 3/7: 复制公共 JavaScript 运行时
-步骤 4/7: 装配微信、抖音或 TikTok Native 平台文件
+步骤 4/7: 装配微信、抖音、TikTok Native 或 TapTap 平台文件
 步骤 5/7: 创建平台要求的占位文件
 步骤 6/7: 写入并验证产物 manifest
 步骤 7/7: 加锁、复核并事务发布
@@ -265,7 +272,7 @@ MiniGameSDK 调用平台 API 所需的 JavaScriptBridge 接口：用它们导出
 
 ---
 
-## 7. 微信 / 抖音 / TikTok 开发者工具导入
+## 7. 微信 / 抖音 / TikTok / TapTap 开发者工具导入
 
 ### 微信小游戏
 
@@ -315,6 +322,83 @@ TikTok 的 WebAudio 没有 `createScriptProcessor()`，用其它节点模拟它�
 
 仓库已自动检查 TikTok 的导出、Manifest、WASM 和包结构，但 beta 不等于真机认证。
 每个 Release 候选仍必须通过 DevTool 构建与目标真机运行。
+
+### TapTap 小游戏（beta）
+
+TapTap 是第四个一级目标，产物结构与微信同构，但运行时只接受 CommonJS，且引擎
+`godot.wasm.br` 必须由宿主 `WXWebAssembly` 按路径解压。这两点导出器都已处理，
+你只需要确认用的是 `support-matrix.json` 里认证的 r2 模板。
+
+**1. 导出**
+
+Dock 平台选 **TapTap 小游戏**，AppID 填 TapTap 开发者中心里该小游戏的 App ID，
+方向按游戏选，输出到空目录。若日志出现红色告警「引擎模板的 godot.js 缺少
+JavaScriptBridge」，说明模板是 eval-free 的 r1，此时 `MiniGameSDK` 全部接口不可用，
+请先换成 r2 模板再导出。
+
+**2. 打包**
+
+```bash
+cd /absolute/path/to/taptap-output
+zip -r ../game.zip . -x ".godot-mini-game-export.json"
+```
+
+`.godot-mini-game-export.json` 是插件的所有权清单，不是运行产物，必须排除。
+
+**3. 上传并解析**
+
+`taptap-cli` 只接受当前工作目录内的文件，所以要在 zip 所在目录执行：
+
+```bash
+cd /absolute/path/to                 # game.zip 所在目录
+taptap-cli auth login                # 首次
+taptap-cli upload-mini-app-package game.zip \
+  --dev-id <DEV_ID> --app-id <APP_ID> --yes --json
+```
+
+返回里的 `artifact_id` 与 `task_id` 后面都要用；解析是异步的，可以轮询：
+
+```bash
+taptap-cli package-management get-mini-app-package-upload-status \
+  --dev-id <DEV_ID> --app-id <APP_ID> --data '{"artifact_id": <ARTIFACT_ID>}'
+```
+
+**4. 创建开发版本**
+
+```bash
+taptap-cli package-management submit-mini-app-package \
+  --dev-id <DEV_ID> --app-id <APP_ID> \
+  --data '{"artifact_id": <ARTIFACT_ID>, "task_id": "<TASK_ID>", "enable_split": false, "package_version": "1.0.0"}' \
+  --yes --json
+```
+
+`enable_split` 固定 `false`：CLI 只支持不分包上传，需要分包请走网页面板。
+返回的 `package_id` 就是这次开发版本。
+
+**5. 扫码自测**
+
+```bash
+taptap-cli test-qr-code --dev-id <DEV_ID> --app-id <APP_ID> \
+  --data '{"package_id": <PACKAGE_ID>}' -o qr.png
+```
+
+用 TapTap 客户端扫码即可打开开发版本；扫码账号需要有该小游戏的测试或开发权限。
+
+**TapTap 已知限制（beta）**
+
+- **Android 没有引擎混音**：宿主 `WebAudioContext` 的 ScriptProcessor 节点残缺
+  （不回调 `onaudioprocess`、不暴露 `bufferSize`，也没有 AudioWorklet），
+  `AudioStreamGenerator`、Stream 模式播放和总线效果都不会出声。请统一用
+  `MiniGameSDK` 的 InnerAudio 接口（`create_inner_audio_context()`、`inner_audio_play()` 等）。
+  iOS 的引擎混音可用。
+- **canvas 没有系统字体**：文字必须随包带字体并经宿主 `tap.loadFont` 加载，否则不显示。
+- **渲染固定 1x backing store**：`devicePixelRatio` 被钉为 1，在 3x / 3.5x 屏上比原生略糊，
+  DPR 配置尚未开放。
+- 包体按压缩后 **60MB** 限制；`game.json` 只保留最小集，不写 `plugins` / `workers`。
+- 分包占位沿用微信/抖音的零字节行为，CLI 接受 `engine/game.js`、`subpacks/game.js` 空文件。
+- **TapTap 特有开放能力尚未封装**：分享板、成就、云存档、排行榜、支付、首页小组件、
+  对战在 v0.3.2 还没有 GDScript 接口；`MiniGameSDK` 目前覆盖与微信/抖音同构的 API 面。
+- beta 不等于真机认证：每个 Release 候选仍需在真机跑一遍（见第 11 节）。
 
 ### 常见首次报错
 
@@ -1697,6 +1781,10 @@ Native 导出会禁用 JavaScript eval。TikTok 请通过
 - TikTok Native → 先运行 `ttmg dev`，再在 TikTok 43.4.0+ 真机重复冒烟。
   必须验证 `TTWebAssembly`、分包、输入、音频、网络、key-value 持久化与登录；
   公开文件系统写入必须在不触及宿主的前提下报告不支持。仓库自动导出冒烟不等于真机认证。
+- TapTap → 用 `taptap-cli` 上传开发版本并扫码（见第 7 节）。日志按 `[Compat]` →
+  `[Loader]` → `[Perf]` 三段看：`[Compat] platform=taptap` 证明入口补丁生效，
+  `7/7` 加 `✓ 加载完成` 才代表引擎真正启动；`已恢复 N 条` 是持久化恢复。
+  Android 只验 InnerAudio，iOS 引擎混音和 InnerAudio 都可验。
 - 真机白屏 99% 是两类原因：
   1. WASM 兼容性 → 用了官方模板。换内置/兼容模板。
   2. `GameGlobal.canvas` 获取失败 → 基础库 < 3.0。升级微信或指定基础库版本。
@@ -1810,6 +1898,10 @@ A: 模拟器里可以，真机大概率 CompileError。核心问题是 `WXWebAss
 
 A: 为了兼容小游戏，我们把 `connectPositionWorklet` 中和了，引擎侧拿不到采样级播放位置。对 2D / 3D 空间音效影响很小；如果确实需要精确音频同步，目前只能等小游戏宿主开放真正的 AudioWorkletNode。
 
+### Q: TapTap 上为什么没有声音？
+
+A: 先看平台。Android 宿主没有可用的 ScriptProcessor / AudioWorklet，Godot 引擎混音不会出声，请改用 `MiniGameSDK` 的 InnerAudio 接口；iOS 的引擎混音与 InnerAudio 都可用。另外 iOS 上的 InnerAudio 需要用户点击后才能播放，启动即自动播放会被静音策略拦掉。
+
 ### Q: 怎么在 Godot 里测试 SDK？
 
 A: 直接在编辑器运行即可——`is_mini_game` 会是 `false`，所有方法安全返回空值/空信号；你可以用 `OS.has_feature("web")` 判断更精确，或者在测试用例里用 `MiniGameSDK._sdk = fake_sdk` 注入假实现。
@@ -1822,7 +1914,7 @@ A: `storage_set/get` 的 key 自己加用户前缀，例如 `"user:%s:level" % o
 
 A: 欢迎 [issue](https://github.com/AnranS/godot_for_minigame/issues) 和 [discussion](https://github.com/AnranS/godot_for_minigame/discussions)。提 bug 请附上：
 - Godot 版本
-- 平台（微信/抖音/TikTok Native）
+- 平台（微信/抖音/TikTok Native/TapTap）
 - 基础库版本
 - Dock 导出日志截图
 - 开发者工具 / 真机 Vconsole 日志
