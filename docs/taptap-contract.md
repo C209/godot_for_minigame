@@ -121,7 +121,7 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 | updateManager | `tap.getUpdateManager()` | 【待验证】 |
 | lifecycle | `tap.onShow()` / `tap.onHide()` | 【确认】← life-cycle 文档 |
 | runtimeError | `tap.onError()` | 【推断】 |
-| webAudio | `tap.createWebAudioContext()`（或 getAudioContext）。真机确认存在；**Android 宿主不驱动 `onaudioprocess`（引擎混音不可用），iOS 驱动正常**（详见 §5 待验证第 2 条） | 【已确认】Android ⚠️ / iOS ✅ |
+| webAudio | `tap.createWebAudioContext()`（或 getAudioContext）。真机确认存在；**Android 的 ScriptProcessor 节点残缺**（不回调 `onaudioprocess`、不暴露 `bufferSize`），iOS 完整可用（详见 §5 待验证第 2 条的探针对照表） | 【已确认】Android ⚠️ / iOS ✅ |
 | innerAudio | `tap.createInnerAudioContext()`。真机 dev 1.0.37 确认可发声（经 `MiniGameSDK.inner_audio_*`） | 【已确认】✅ |
 | webAssembly | 见 §1（走 `WXWebAssembly` 原生桥） | 【已确认】✅ |
 
@@ -199,11 +199,23 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 
 ### 仍待验证 / 已知限制
 - **iOS 低档机内存**：dev 1.0.40 已在 iPhone 上跑通 demo（渲染/输入），但 <1G 内存低档机与长时间运行的内存表现仍未压测。
-- **引擎 WebAudio 混音按平台分裂（真机 dev 1.0.40 之后修正）**：**Android** 上 `tap.createWebAudioContext()` 存在、驱动可初始化（`init channels=2`/`script_create ok`/`script_start ok`），但宿主从不回调 `onaudioprocess`（计数恒 0），引擎混音拿不到时间片 → 该平台请用 `inner_audio_*`（真机 1.0.37 已确认发声），引擎 `AudioStreamGenerator` 视为静音。**iOS 上同一路径是通的**：真机日志 `[Audio] script_create ok` 后 3 秒内 `[Audio] onaudioprocess callbacks=70`，2048 samples / 48kHz = 42.67ms × 70 ≈ 2.99s，等于满速驱动；`WebAudio caps` 还多出 `worklet=function`。此前把「宿主不支持引擎混音」写成全平台结论是错的，只对 Android 自研 Chromium webglhost 成立。iOS 尚缺一次主观听感确认（回调跑满 ≠ 扬声器有声）。
+- **引擎 WebAudio 混音按平台分裂，归因已由探针证实（dev 1.0.41 双平台）**：iOS 可用、Android 不可用，且 Android 的故障点已收敛到 **ScriptProcessor 这一个节点**（不是整条音频流水线）：
+
+  | 探针（dev 1.0.41） | iOS | Android |
+  |---|---|---|
+  | `onaudioprocess callbacks`（3s） | 70（2048/48kHz = 42.67ms×70 ≈ 2.99s，满速） | 0 |
+  | `探针 clock`（`ctx.currentTime` 增量 / wall） | `+3.000s / 3001ms` | **`+3.000s / 3001ms`** ← 渲染时钟按实时推进 |
+  | `探针 source`（0.5s BufferSource 的 `onended`） | 已触发 | **已触发** ← 音频图在渲染 |
+  | `worklet` | function | undefined |
+  | `destination.channelCount` | 2 | undefined（靠 adapter 的 Proxy 兜底） |
+  | `createScriptProcessor(0).bufferSize` | 256 | **undefined**（节点对象残缺） |
+  | 初始 `state` | suspended | `default`（非标准状态名） |
+
+  结论：Android 宿主**有**在跑的 WebAudio 渲染线程（时钟推进 + BufferSource 正常播完），缺的是 ScriptProcessor 节点的处理回调与 `bufferSize` 暴露。因为 Godot 只有 ScriptProcessor 与 AudioWorklet 两条路（后者在 Android 也是 `undefined`），**Android 引擎混音确定不可用 → 请用 `inner_audio_*`**（真机 1.0.37 已确认发声），引擎 `AudioStreamGenerator` 视为静音。**不需要再为这条做专项真机轮次**。此前写的「宿主不驱动音频线程」归因错误，已按上表更正；iOS 尚缺一次主观听感确认（回调跑满 ≠ 扬声器有声）。
 - **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
-- **DPR 仍 1x**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。iOS 侧证据：dev 1.0.40 日志 `buffer=440x956` 与 `client=440x956` 相等，而 440×956 正是 iPhone 16 Pro Max 的**逻辑**分辨率（物理 1320×2868），即当前按 1/3 线性分辨率渲染后由 GPU 放大。开关在 `adapter.js` 的 `_dpr`（`taptap` 被钉死为 1）；放开前先看 `canvas metrics` 新加的 `dpr=… (host=…)` 字段确认宿主上报倍数，并注意 3x = 9 倍填充，建议先按 `min(hostDpr, 2)` 真机量帧率。
+- **DPR 仍 1x（宿主倍数已实测）**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。dev 1.0.41 的 `canvas metrics` 给出确切数字：**iOS `dpr=1 (host=3)`**（440×956 逻辑 → 物理 1320×2868）、**Android `dpr=1 (host=3.5)`**（348×755 → 物理 1218×2642），即当前分别是 1/3 与 1/3.5 线性分辨率。开关在 `adapter.js` 的 `_dpr`（`taptap` 被钉死为 1）。放开前先算填充：3x=9 倍、3.5x=12.25 倍像素，而 Android 启动期只有 41.6fps（最慢帧 1345ms）、iOS 51.6fps（最慢帧 696ms），故建议先按 `min(hostDpr, 2)` 上真机量帧率，再决定是否继续提高。
 - **`updateManager` / `getUpdateManager`**：尚未真机核对。
-- **`cannot change cached WebGL attribute stencil (requested false, cached true)` 是 iOS 良性告警**：adapter 的默认属性就是 `stencil:false`，但 WebKit 只要 `depth:true` 就必然分配 DEPTH24_STENCIL8 并回读 `stencil:true`，属宿主行为而非适配缺陷（代价每像素多 8 bit，Godot 不用 stencil 也无害）。待办：对该组合做白名单，否则将来真正的属性不匹配（`antialias` / `depth`）会被这条噪音盖掉。
+- **`cannot change cached WebGL attribute …` 是良性告警（分平台两种）**：adapter 的默认属性是 `antialias:false, stencil:false`，但宿主有权回读成别的值。**iOS** 只有 `stencil (cached true)`：WebKit 只要 `depth:true` 就必然分配 DEPTH24_STENCIL8，代价是每像素多 8 bit，Godot 不用 stencil 也无害。**Android** 还多一条 `antialias (cached true)`：宿主实际开着 MSAA，我们改不了，但它很可能是启动期 41.6fps 的一个因素，评估 DPR 时要一并计入。待办：对这两组组合做白名单，否则将来真正的属性不匹配（`depth` 等）会被噪音盖掉。
 - **宿主仍缺 `FormData` / `structuredClone` / `TextDecoderStream`**：仓库内零引用（只出现在 `web_compat.js` 的 watchlist），不影响启动；游戏侧若用 FormData 上传会直接 ReferenceError，需在 USAGE 明示或补最小桩。
 
 ## 6. Phase 1 实现记录
@@ -235,7 +247,8 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 - **TapTap 必须走 `WXWebAssembly` 原生桥（不能只用标准 `WebAssembly`）**：引擎以 `godot.wasm.br` 交付，标准 `WebAssembly.instantiate` 无法解 brotli，且 `fetch.js` 对 `.wasm` 请求设计上返回空 stub（原设计假设由原生桥按路径读取）。真机 1.0.7 因此报 `CompileError: WebAssembly.instantiate(): BufferSource argument is empty`。修复：`getNativeWebAssemblyApis()` 对 taptap 返回宿主注入的 `WXWebAssembly`，adapter 安装路径式 shim 后用 `instantiate("engine/godot.wasm.br")` 装载，解压由宿主完成。真机 1.0.6 已证实该桥存在且可调用。
 - **`game.json` 保持最小集**：不写 `plugins`（不需要 UnityPlugin）、不写 `workers`（TapTap 的 `workers` 是字符串目录名，本项目未使用 worker）。`parallelPreloadSubpackages` 留作后续启动优化，未默认开启。
 - **分包占位文件沿用微信/抖音的零字节行为**：真机 1.0.7 确认 CLI 上传接受零字节占位（`engine/game.js`、`subpacks/game.js`），无需把 taptap 加入 `zero_byte_allowed` 排除项。
-- **`supportTier: beta`**：Android 真机已验证渲染/输入/JS Bridge/InnerAudio；iOS 真机（dev 1.0.40）已验证渲染/输入（进游戏 + 点击生效），JS Bridge/音频待验；TapTap 开放能力（分享板/成就/云存档/排行榜/支付/小组件/对战）、`updateManager` 与 host DPR 拆分仍未验收。
+- **`_stat` 的调用形态要缓存**：TapTap Android 宿主把微信形态 `fs.stat({path})` 的整个 options 对象丢给 Node `fs.stat`，该形态**永远失败**（`path must be of type string, Buffer, or URL`），只有 Node 形态 `fs.stat(path, cb)` 能通。dev 1.0.41 日志里每个 `/userfs` 文件都在回写时先炸一对宿主错误日志（32 文件 = 32 对）。现在 `_stat` 按「首选形态 → 其余形态」顺序尝试并记住第一次成功的形态（taptap 首选 Node 形态，其他平台首选 options），失败一次即固化为该 runtime 的形态，既消掉噪音也省掉每文件一次多余往返。
+- **`supportTier: beta`**：Android 真机已验证渲染/输入/JS Bridge/InnerAudio；iOS 真机（dev 1.0.40）已验证渲染/输入（进游戏 + 点击生效），dev 1.0.41 起持久化确认（恢复 32 条 + 回写成功）；引擎 WebAudio 已定性为「iOS 通 / Android ScriptProcessor 残缺」；TapTap 开放能力（分享板/成就/云存档/排行榜/支付/小组件/对战）、`updateManager` 与 host DPR 拆分仍未验收。
 
 ## 7. 后续阶段（Phase 2–4 待办）
 

@@ -73,7 +73,7 @@ export const releaseData = {
           "input": "verified",
           "jsBridge": "pending",
           "innerAudio": "pending",
-          "engineWebAudio": "pending",
+          "engineWebAudio": "verified",
           "backingStore": "1x"
         }
       }
