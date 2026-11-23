@@ -421,8 +421,8 @@ taptap-cli test-qr-code --dev-id <DEV_ID> --app-id <APP_ID> \
 
 所有异步接口都通过 **信号** 回调，不要用 await；同步接口（`storage_*`、`vibrate_*`）直接返回。
 
-230 个公开方法和 86 个信号描述的是完整 Bridge 接口面，不代表三个平台全部兼容。
-同名 API 只有在所选 `wx`、`tt` 或 `TTMinis.game` 宿主暴露对应能力时才会分发；
+230 个公开方法和 86 个信号描述的是完整 Bridge 接口面，不代表四个平台全部兼容。
+同名 API 只有在所选 `wx`、`tt`、`TTMinis.game` 或 `tap` 宿主暴露对应能力时才会分发；
 支付等平台特有流程走显式映射。依赖某个接口前请调用 `can_i_use()`，并用目标宿主
 和目标版本实测。
 

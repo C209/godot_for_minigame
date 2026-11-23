@@ -459,10 +459,11 @@ The plugin registers `MiniGameSDK` as an autoload. In non-mini-game environments
 Async calls deliver results via **signals** — no `await`. Sync calls (`storage_*`, `vibrate_*`) return immediately.
 
 The 230 public methods and 86 signals are the complete bridge surface, not a
-blanket three-platform compatibility claim. Same-name APIs are dispatched to
-`wx`, `tt`, or `TTMinis.game` only when the selected host exposes the required
-capability. Payments and other platform-specific flows use explicit mappings;
-check `can_i_use()` and test the exact host/version before relying on an API.
+blanket four-platform compatibility claim. Same-name APIs are dispatched to
+`wx`, `tt`, `TTMinis.game`, or `tap` only when the selected host exposes the
+required capability. Payments and other platform-specific flows use explicit
+mappings; check `can_i_use()` and test the exact host/version before relying on
+an API.
 
 ### Detect runtime
 

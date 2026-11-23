@@ -61,8 +61,8 @@
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <h3>一套 SDK 覆盖三个宿主</h3>
-      <p><code>MiniGameSDK</code> 通过 <code>wx</code>、<code>tt</code> 与 <code>TTMinis.game</code> 提供 230 个方法、86 个信号。调用前先检查宿主是否支持，在编辑器里开发时调用也不会报错。</p>
+      <h3>一套 SDK 覆盖四个宿主</h3>
+      <p><code>MiniGameSDK</code> 通过 <code>wx</code>、<code>tt</code>、<code>TTMinis.game</code> 与 <code>tap</code> 提供 230 个方法、86 个信号。调用前先检查宿主是否支持，在编辑器里开发时调用也不会报错。</p>
     </td>
     <td width="50%" valign="top">
       <h3>放心重复导出</h3>

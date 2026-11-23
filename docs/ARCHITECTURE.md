@@ -170,18 +170,19 @@ entry points, configuration, validation, and release requirements.
 | `wechat` | `wx` | `subpackages` | automated export smoke; DevTools/device remain manual |
 | `douyin` | `tt` | `subPackages` | automated export smoke; DevTools/device remain manual |
 | `tiktok` | `TTMinis.game` | `subpackages` | Native **beta**; automated export smoke, then required `ttmg` compile and real-device release gate |
+| `taptap` | `tap` | `subpackages` | Native **beta**; automated export smoke, then a manual device pass (Android verified, iOS inner audio still pending) |
 
 TikTok Native requires client 43.4.0 or newer for `TTWebAssembly`. The HTML
 runtime has a different boot and configuration contract and is intentionally
-outside the v0.3 exporter. A method present in the 225-method SDK surface is not
-automatically supported by all three hosts: same-name APIs pass through
+outside the v0.3 exporter. A method present in the 230-method SDK surface is not
+automatically supported by all four hosts: same-name APIs pass through
 capability gating, while payments and other host-specific behavior require an
 explicit provider mapping.
 
 导出平台身份与运行时命名空间是两份独立契约。TikTok 不会被归一化成抖音；两者虽然
 同属字节系宿主，但入口、配置、校验与发布门禁不同。TikTok Native 要求客户端
 43.4.0+ 才能使用 `TTWebAssembly`，v0.3 不包含 HTML runtime。SDK 中出现某个方法
-也不代表三个宿主均支持：同名能力先过 capability gating，支付等平台特有能力必须
+也不代表四个宿主均支持：同名能力先过 capability gating，支付等平台特有能力必须
 显式映射到对应 Provider。
 
 ## Version policy / 版本策略

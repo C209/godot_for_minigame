@@ -65,10 +65,10 @@
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <h3>One SDK for three hosts</h3>
+      <h3>One SDK for four hosts</h3>
       <p><code>MiniGameSDK</code> offers 230 methods and 86 signals over <code>wx</code>, <code>tt</code>,
-      and <code>TTMinis.game</code>. It checks what each host supports before calling it and stays safe
-      to call while you develop in the editor.</p>
+      <code>TTMinis.game</code>, and <code>tap</code>. It checks what each host supports before calling it
+      and stays safe to call while you develop in the editor.</p>
     </td>
     <td width="50%" valign="top">
       <h3>Safe re-exports</h3>
