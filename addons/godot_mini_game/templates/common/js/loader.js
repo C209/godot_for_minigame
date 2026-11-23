@@ -45,6 +45,29 @@ class FakeBlob {
 
 const godotSdk = new GodotSDK();
 const _persistentWritebackEnabled = godotSdk.platform !== "tiktok";
+// A restore of a few dozen small saves finishes in well under a second; anything
+// past this is a host call that is not coming back, not a slow disk.
+const RESTORE_DEADLINE_MS = 8000;
+
+function _withRestoreDeadline(promise, ms) {
+  // Use the plain global timers: the adapter window wrapper does not forward
+  // setTimeout on every host (the loader test caught exactly that).
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`持久化恢复超时（${ms}ms）`));
+    }, ms);
+    const finish = (callback) => (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    promise.then(finish(resolve), finish(reject));
+  });
+}
 
 function _safeSet(obj, key, value) {
   if (!obj) return false;
@@ -514,7 +537,21 @@ class Loader {
       this._assertNotDisposed();
 
       console.log("[Loader] 5/7 从宿主持久目录恢复 /userfs...");
-      const restored = await godotSdk.restorePersistentPaths(persistentPaths);
+      // Saves must never decide whether the game boots. A host FS call that never
+      // answers froze startup at exactly this step on both platforms (dev 1.0.42:
+      // no "已恢复" line, no engine, only the frame probe still ticking). Race the
+      // restore against a deadline and degrade to an empty user directory instead
+      // of leaving the player on the loading screen.
+      let restored = { entries: 0 };
+      try {
+        restored = await _withRestoreDeadline(
+          godotSdk.restorePersistentPaths(persistentPaths),
+          RESTORE_DEADLINE_MS,
+        );
+      } catch (error) {
+        const reason = error && error.message ? error.message : String(error);
+        console.warn("[Loader]     持久化恢复未完成，按空 user 目录继续:", reason);
+      }
       console.log(`[Loader]     已恢复 ${restored.entries || 0} 个持久文件系统条目`);
       this._assertNotDisposed();
 

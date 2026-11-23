@@ -70,11 +70,14 @@ async function fixture({ host = new Map(), platform = "wechat", statShape = "opt
       // the Node-style (path, callback) form reaches the real filesystem.
       if (typeof first === "string" && typeof second === "function") {
         calls.statNode++;
+        // Hosts that accept the call and then never answer the callback — the
+        // exact shape of the dev 1.0.42 startup freeze.
+        if (statShape === "silent-node") return;
         try { second(null, resolveStats(first)); } catch (error) { second(error); }
         return;
       }
       calls.statOptions++;
-      if (statShape === "node-only") {
+      if (statShape === "node-only" || statShape === "silent-node") {
         const error = new Error("path must be of type string, Buffer, or URL");
         error.code = "ERR_INVALID_ARG_TYPE";
         complete(first, () => { throw error; });
@@ -455,25 +458,42 @@ await test("TikTok starts with an empty virtual user directory when no host save
 
 await test("a host whose options-shaped stat always throws still restores and caches the working shape", async () => {
   // dev 1.0.41 Android log: one host error pair per /userfs file, because the
-  // options call can never succeed there. TapTap must start with the Node shape
-  // and never pay for the failing attempt.
+  // options call can never succeed there. The options shape stays first (it is
+  // the proven one on iOS), so the host pays for it once, then reuses the shape
+  // that actually answered.
   const tap = await fixture({ platform: "taptap", statShape: "node-only" });
   put(tap.host, hostPath("/userfs/saves/slot.save"), [1, 2, 3]);
   await tap.sdk.restorePersistentPaths();
   assert.deepEqual([...tap.virtual.get("/userfs/saves/slot.save")], [1, 2, 3]);
-  assert.equal(tap.calls.statOptions, 0, "TapTap starts with the Node shape, so the options call is never attempted");
+  assert.equal(tap.calls.statOptions, 1, "the failing shape is tried once per run, not once per file");
   assert.ok(tap.calls.statNode >= 2, "restore stats the directory and the file");
 
-  // Any other host that only accepts the Node shape must pay for the failed
-  // options attempt exactly once, then reuse the shape for the rest of the run.
   const other = await fixture({ platform: "wechat", statShape: "node-only" });
   put(other.host, hostPath("/userfs/one.save"), [4]);
   put(other.host, hostPath("/userfs/two.save"), [5]);
   await other.sdk.restorePersistentPaths();
   assert.deepEqual([...other.virtual.get("/userfs/one.save")], [4]);
   assert.deepEqual([...other.virtual.get("/userfs/two.save")], [5]);
-  assert.equal(other.calls.statOptions, 1, "the failing shape is tried once, then cached away");
+  assert.equal(other.calls.statOptions, 1, "three stats, one failing attempt: the rest use the cache");
   assert.ok(other.calls.statNode >= 2, "both restored files are stat'ed through the cached shape");
+});
+
+await test("a stat shape that never answers fails the deadline instead of hanging", async () => {
+  // dev 1.0.42 regression: `fs.stat(path, cb)` on TapTap neither answers nor
+  // throws, so `restorePersistentPaths` never settled and the engine never
+  // started. Every shape now carries a deadline; a silent shape must convert
+  // into a rejection, never into a pending promise.
+  const f = await fixture({ statShape: "silent-node" });
+  f.sdk._statStyle = "node";
+  f.sdk._statTimeoutMs = 20;
+  put(f.host, hostPath("/userfs/saves/slot.save"), [1, 2, 3]);
+  const started = Date.now();
+  await assert.rejects(
+    f.sdk.restorePersistentPaths(),
+    /did not answer within 20ms/,
+    "a silent host must surface as a timeout error",
+  );
+  assert.ok(Date.now() - started < 2000, "the deadline settles the call instead of waiting forever");
 });
 
 console.log("persistence_sync.test.mjs: ok");

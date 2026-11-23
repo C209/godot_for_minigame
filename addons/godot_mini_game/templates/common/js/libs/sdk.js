@@ -4502,19 +4502,19 @@ class GodotSDK {
   }
 
   async _stat(fs, path) {
-    // Hosts disagree about the call shape, and a wrong shape costs a full round
-    // trip plus host-side error noise. TapTap's Android host hands the whole
-    // WeChat options object to a Node `fs.stat`, so the options call can never
-    // succeed there: every writeback logged one host error per file (32 files =
-    // 32 error pairs in the dev 1.0.41 log) before the fallback rescued it.
-    // Remember the first shape that works and start with it — Node style first
-    // on TapTap, options first everywhere else.
-    const preferred = this._statStyle || (this.platform === "taptap" ? "node" : "options");
+    // Hosts disagree about the call shape, and a wrong shape fails in one of two
+    // ways: it throws (cheap, fall through) or it never answers at all (dev 1.0.42:
+    // preferring the Node shape on TapTap froze `restorePersistentPaths` forever on
+    // both platforms — startup stopped at "5/7 从宿主持久目录恢复" and the game never
+    // ran). So the options shape stays first (it is the one proven on iOS), every
+    // attempt carries a deadline, and whichever shape answers first is reused for
+    // the rest of the run.
+    const preferred = this._statStyle || "options";
     const order = [preferred, ...["options", "node", "filePath"].filter((style) => style !== preferred)];
     let firstError = null;
     for (const style of order) {
       try {
-        const result = await this._statOnce(fs, style, path);
+        const result = await this._statDeadline(this._statOnce(fs, style, path), style);
         this._statStyle = style;
         return result;
       } catch (error) {
@@ -4524,6 +4524,25 @@ class GodotSDK {
       }
     }
     throw firstError || new Error(`FileSystemManager.stat failed for ${path}`);
+  }
+
+  _statDeadline(operation, style) {
+    const timeout = Number(this._statTimeoutMs) > 0 ? Number(this._statTimeoutMs) : 1000;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(`FileSystemManager.stat did not answer within ${timeout}ms (${style} shape)`));
+      }, timeout);
+      const finish = (callback) => (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        callback(value);
+      };
+      operation.then(finish(resolve), finish(reject));
+    });
   }
 
   _statOnce(fs, style, path) {
