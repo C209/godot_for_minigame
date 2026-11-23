@@ -30,14 +30,14 @@ function children(tree, target) {
     .map((key) => key.slice(prefix.length)).filter((name) => !name.includes("/"));
 }
 
-async function fixture({ host = new Map(), platform = "wechat" } = {}) {
-  for (const name of ["wx", "tt", "TTMinis", "GameGlobal", "PlatformRuntime", "__godotMiniGamePlatformRuntime"]) {
+async function fixture({ host = new Map(), platform = "wechat", statShape = "options" } = {}) {
+  for (const name of ["wx", "tap", "tt", "TTMinis", "GameGlobal", "PlatformRuntime", "__godotMiniGamePlatformRuntime"]) {
     delete globalThis[name];
   }
   if (!host.has("/host-data")) put(host, "/host-data", null);
   const virtual = new Map();
   put(virtual, "/userfs", null);
-  const calls = { writes: [], mkdirs: [], unlinks: [], rmdirs: [], reads: 0, manager: 0 };
+  const calls = { writes: [], mkdirs: [], unlinks: [], rmdirs: [], reads: 0, manager: 0, statOptions: 0, statNode: 0 };
   const control = {};
   const complete = (options, action) => {
     try { options.success(action() || {}); } catch (error) { options.fail(error); }
@@ -58,14 +58,29 @@ async function fixture({ host = new Map(), platform = "wechat" } = {}) {
       });
     },
     readdir(options) { complete(options, () => ({ files: children(host, options.dirPath) })); },
-    stat(options) {
-      complete(options, () => {
-        const target = options.path || options.filePath;
+    stat(first, second) {
+      const resolveStats = (target) => {
         if (control.stat) control.stat(target);
         if (!host.has(target)) throw isMissing(target);
         const directory = host.get(target) === null;
         return { stats: { isDirectory: () => directory, isFile: () => !directory } };
-      });
+      };
+      // TapTap's Android host hands the WeChat options object to a Node fs.stat,
+      // which rejects it ("path must be of type string, Buffer, or URL"); only
+      // the Node-style (path, callback) form reaches the real filesystem.
+      if (typeof first === "string" && typeof second === "function") {
+        calls.statNode++;
+        try { second(null, resolveStats(first)); } catch (error) { second(error); }
+        return;
+      }
+      calls.statOptions++;
+      if (statShape === "node-only") {
+        const error = new Error("path must be of type string, Buffer, or URL");
+        error.code = "ERR_INVALID_ARG_TYPE";
+        complete(first, () => { throw error; });
+        return;
+      }
+      complete(first, () => resolveStats(first.path || first.filePath));
     },
     readFile(options) {
       complete(options, () => {
@@ -103,7 +118,8 @@ async function fixture({ host = new Map(), platform = "wechat" } = {}) {
     },
   };
   const api = { env: { USER_DATA_PATH: "/host-data" }, getFileSystemManager() { calls.manager++; return manager; } };
-  if (platform === "tiktok") globalThis.TTMinis = { game: api };
+  if (platform === "taptap") globalThis.tap = api;
+  else if (platform === "tiktok") globalThis.TTMinis = { game: api };
   else if (platform === "douyin") globalThis.tt = api;
   else globalThis.wx = api;
   const runtimeUrl = moduleUrl(fs.readFileSync(path.join(commonRoot, "js/platform_runtime.js"), "utf8"));
@@ -435,6 +451,29 @@ await test("TikTok starts with an empty virtual user directory when no host save
   assert.equal((await f.sdk.restorePersistentPaths()).entries, 0);
   assert.equal(f.virtual.get("/userfs"), null);
   assert.deepEqual(f.calls.mkdirs, []);
+});
+
+await test("a host whose options-shaped stat always throws still restores and caches the working shape", async () => {
+  // dev 1.0.41 Android log: one host error pair per /userfs file, because the
+  // options call can never succeed there. TapTap must start with the Node shape
+  // and never pay for the failing attempt.
+  const tap = await fixture({ platform: "taptap", statShape: "node-only" });
+  put(tap.host, hostPath("/userfs/saves/slot.save"), [1, 2, 3]);
+  await tap.sdk.restorePersistentPaths();
+  assert.deepEqual([...tap.virtual.get("/userfs/saves/slot.save")], [1, 2, 3]);
+  assert.equal(tap.calls.statOptions, 0, "TapTap starts with the Node shape, so the options call is never attempted");
+  assert.ok(tap.calls.statNode >= 2, "restore stats the directory and the file");
+
+  // Any other host that only accepts the Node shape must pay for the failed
+  // options attempt exactly once, then reuse the shape for the rest of the run.
+  const other = await fixture({ platform: "wechat", statShape: "node-only" });
+  put(other.host, hostPath("/userfs/one.save"), [4]);
+  put(other.host, hostPath("/userfs/two.save"), [5]);
+  await other.sdk.restorePersistentPaths();
+  assert.deepEqual([...other.virtual.get("/userfs/one.save")], [4]);
+  assert.deepEqual([...other.virtual.get("/userfs/two.save")], [5]);
+  assert.equal(other.calls.statOptions, 1, "the failing shape is tried once, then cached away");
+  assert.ok(other.calls.statNode >= 2, "both restored files are stat'ed through the cached shape");
 });
 
 console.log("persistence_sync.test.mjs: ok");

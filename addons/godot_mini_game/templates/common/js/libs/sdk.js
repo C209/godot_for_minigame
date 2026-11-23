@@ -4502,33 +4502,50 @@ class GodotSDK {
   }
 
   async _stat(fs, path) {
-    try {
-      return await _fsCall(fs, "stat", { path });
-    } catch (pathError) {
-      // Some hosts (TapTap) delegate stat to a Node-style fs, which needs a
-      // path string as the first argument instead of a WeChat options object.
-      if (/must be of type string|Invalid argument type|ERR_INVALID_ARG_TYPE/i
-        .test(String(pathError && pathError.message))) {
-        return await new Promise((resolve, reject) => {
-          try {
-            const maybe = fs.stat(path, (error, stats) => {
-              if (error) reject(error);
-              else resolve(stats || {});
-            });
-            if (maybe && typeof maybe.then === "function") maybe.then(resolve, reject);
-          } catch (error) {
-            reject(error);
-          }
-        });
-      }
+    // Hosts disagree about the call shape, and a wrong shape costs a full round
+    // trip plus host-side error noise. TapTap's Android host hands the whole
+    // WeChat options object to a Node `fs.stat`, so the options call can never
+    // succeed there: every writeback logged one host error per file (32 files =
+    // 32 error pairs in the dev 1.0.41 log) before the fallback rescued it.
+    // Remember the first shape that works and start with it — Node style first
+    // on TapTap, options first everywhere else.
+    const preferred = this._statStyle || (this.platform === "taptap" ? "node" : "options");
+    const order = [preferred, ...["options", "node", "filePath"].filter((style) => style !== preferred)];
+    let firstError = null;
+    for (const style of order) {
       try {
-        // Older ByteDance host versions used `filePath` while current
-        // TTMinis documentation uses `path` and returns `stats`.
-        return await _fsCall(fs, "stat", { filePath: path });
-      } catch (_) {
-        throw pathError;
+        const result = await this._statOnce(fs, style, path);
+        this._statStyle = style;
+        return result;
+      } catch (error) {
+        if (!firstError) firstError = error;
+        // A genuinely absent path is the answer, not a call-shape problem.
+        if (error instanceof Error && _isMissingHostPath(error)) throw error;
       }
     }
+    throw firstError || new Error(`FileSystemManager.stat failed for ${path}`);
+  }
+
+  _statOnce(fs, style, path) {
+    if (style === "filePath") {
+      // Older ByteDance host versions used `filePath` while current TTMinis
+      // documentation uses `path`.
+      return _fsCall(fs, "stat", { filePath: path });
+    }
+    if (style === "options") return _fsCall(fs, "stat", { path });
+    // Node style: TapTap delegates stat to a Node-style fs, which needs a path
+    // string as the first argument instead of a WeChat options object.
+    return new Promise((resolve, reject) => {
+      try {
+        const maybe = fs.stat(path, (error, stats) => {
+          if (error) reject(error);
+          else resolve(stats || {});
+        });
+        if (maybe && typeof maybe.then === "function") maybe.then(resolve, reject);
+      } catch (error) {
+        reject(error);
+      }
+    });
   }
 
   async _accessOrMkdir(fs, dirPath) {
