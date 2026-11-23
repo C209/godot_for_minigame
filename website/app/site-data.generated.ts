@@ -71,7 +71,7 @@ export const releaseData = {
         "ios": {
           "rendering": "verified",
           "input": "verified",
-          "jsBridge": "pending",
+          "jsBridge": "verified",
           "innerAudio": "pending",
           "engineWebAudio": "verified",
           "backingStore": "1x"

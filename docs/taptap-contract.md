@@ -198,12 +198,8 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 9. **TapTap 的 `readFile` 回调不是二进制**（iOS 真机 1.0.39 定位）：上一条改成自己读包后立刻暴露 `[Loader] 主包读取失败: 宿主返回了 object，需要二进制数据`。TapTap 的 `FileSystemManager` 把一部分调用交给 Node 风格 shim（`stat` 就必须用 `(path, cb)`），`readFile` 的 `data` 既不是 `ArrayBuffer` 也不是 TypedArray，无法直接写进引擎 FS。**修复**：主包读取改为「多形状 + 多路径」——依次尝试 WeChat options、`encoding:"base64"`（用 atob 解码）、Node 风格 `readFile(path, cb)`（4 秒超时）、`readFileSync`，每条路径都先试 `engine/godot.zip` 再试 `/engine/godot.zip`；返回值用 `_fileBytes` / `_bytesFromRead` 递归解包（同/跨 realm 的 ArrayBuffer、TypedArray、`{type:"Buffer",data:[…]}`、`{buffer}`、`{data}`、array-like、promise、`arrayBuffer()/text()` body）；空 envelope 视为该路径无效并换下一个。全部失败时把每次调用的返回值形状（`[object X]/Ctor keys=[…] byteLength length`）写进错误。成功时会打印 `[Loader] 主包读取方式: <options|base64|node|readFileSync> (<path>)`，便于后续按平台固化路径。**dev 1.0.40 起 iOS 正常进入游戏界面，`Tap to Score` 点击生效**（渲染 + 输入同时确认）。
 
 ### 仍待验证 / 已知限制
-- **iOS 的 JS Bridge 与 InnerAudio 待确认（dev 1.0.44 起带探针）**：demo `scripts/main.gd` 启动时打印
-  `[Probe] bridge platform=… mini_game=… tap=object|null error=…`；按主界面 Play 后，0.6s / 1.8s 各打印一次
-  `[Probe] inner_audio sample +…s`，随后是 `[Probe] inner_audio getState data=…`，`play` / `ended` 事件也各打一行。
-  判据：`tap=object` 且 `mini_game=true` → iOS JS Bridge 通过；`currentTime` 随采样点推进（+0.6s ≈ 0.6、+1.8s ≈ 1.8）、
-  `paused=false`、并收到 `ended` → InnerAudio 通路成立（是否真的出声仍需耳朵确认）。两项都通过后，把
-  `support-matrix.json` 的 `ios.jsBridge` / `ios.innerAudio` 改成 `verified`。
+- **iOS JS Bridge 已在 dev 1.0.44 确认（2026-11-23）**：真机日志 `[Probe] bridge platform=taptap mini_game=true tap=object error=`，`support-matrix` 的 `ios.jsBridge` 已改 `verified`；同一探针在 Android 上结果一致。
+- **iOS InnerAudio 只差「出声」这一条**：dev 1.0.44 探针显示 `createInnerAudioContext ok=true`、`play ok=true`，`canplay` / `play` 事件都触发，`+0.6s` 的 `getState` 里 `currentTime=0.557`（起点 0.005），播放时钟按实时推进。demo 的自动停止在 0.85s 触发（`stop` @ 0.557），所以这次没看到 `ended`；要补这条，在 Demo 的 Inner Audio 区单独按 `Play`（不会自动停）即可。**矩阵仍留 `pending`**：回调与时钟正常不等于扬声器有声，听感确认还没做。
 - **iOS 低档机内存**：dev 1.0.40 已在 iPhone 上跑通 demo（渲染/输入），但 <1G 内存低档机与长时间运行的内存表现仍未压测。
 - **引擎 WebAudio 混音按平台分裂，归因已由探针证实（dev 1.0.41 双平台）**：iOS 可用、Android 不可用，且 Android 的故障点已收敛到 **ScriptProcessor 这一个节点**（不是整条音频流水线）：
 
@@ -219,7 +215,7 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 
   结论：Android 宿主**有**在跑的 WebAudio 渲染线程（时钟推进 + BufferSource 正常播完），缺的是 ScriptProcessor 节点的处理回调与 `bufferSize` 暴露。因为 Godot 只有 ScriptProcessor 与 AudioWorklet 两条路（后者在 Android 也是 `undefined`），**Android 引擎混音确定不可用 → 请用 `inner_audio_*`**（真机 1.0.37 已确认发声），引擎 `AudioStreamGenerator` 视为静音。**不需要再为这条做专项真机轮次**。此前写的「宿主不驱动音频线程」归因错误，已按上表更正；iOS 尚缺一次主观听感确认（回调跑满 ≠ 扬声器有声）。
 - **canvas 无系统字体**：实测 `fillText` 不显示（无字体），需 `tap.loadFont` 加载字体文件。Godot 移植须预置中文字体（与微信/抖音同限制）。
-- **DPR 仍 1x（宿主倍数已实测）**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。dev 1.0.41/1.0.43 的 `canvas metrics` 给出确切数字：**iOS `dpr=1 (host=3)`**（440×956 逻辑 → 物理 1320×2868）、**Android `dpr=1 (host=3.5)`**（360×800 → 物理 1260×2800），即当前分别是 1/3 与 1/3.5 线性分辨率。开关在 `adapter.js` 的 `_dpr`（`taptap` 被钉死为 1）。放开前先算填充：3x=9 倍、3.5x=12.25 倍像素。dev 1.0.43 的帧率基线（`[Perf]` 探针）为 **iOS 稳态 59.4fps / 最慢帧 67ms、Android 稳态 58.6fps / 最慢帧 54ms**，启动期则是 iOS 52.0fps/617ms、Android 35.0fps/**2183ms**（shader 编译级 hitch，非稳态问题）——有这个基线才好判断 2x 后的掉帧是不是 DPR 导致，故建议先按 `min(hostDpr, 2)` 上真机量一版。
+- **DPR 仍 1x（宿主倍数已实测；2026-11-23 决定暂缓，作为已知问题记录）**：backing store 保持 1x（真机验证时的配置），切 host DPR 拆分需另行真机验收。dev 1.0.41/1.0.43 的 `canvas metrics` 给出确切数字：**iOS `dpr=1 (host=3)`**（440×956 逻辑 → 物理 1320×2868）、**Android `dpr=1 (host=3.5)`**（360×800 → 物理 1260×2800），即当前分别是 1/3 与 1/3.5 线性分辨率。开关在 `adapter.js` 的 `_dpr`（`taptap` 被钉死为 1）。放开前先算填充：3x=9 倍、3.5x=12.25 倍像素。帧率基线（dev 1.0.44 `[Perf]` 探针）为 **iOS 稳态 59.7fps / 最慢帧 61ms、Android 稳态 59.8fps / 最慢帧 25ms**，启动期则是 iOS 51.0fps/642ms、Android 33.6fps/**2061ms**（shader 编译级 hitch，非稳态问题）。**结论：暂不推进 DPR**，理由是高 DPR 会让 Android 启动期本已偏低的帧率进一步恶化，且缺一次专门的 2x 真机量测；对外按「1x backing store，高分屏略糊」说明，不排期。
 - **`updateManager` / `getUpdateManager`**：尚未真机核对。
 - **`cannot change cached WebGL attribute …` 是良性告警（分平台两种）**：adapter 的默认属性是 `antialias:false, stencil:false`，但宿主有权回读成别的值。**iOS** 只有 `stencil (cached true)`：WebKit 只要 `depth:true` 就必然分配 DEPTH24_STENCIL8，代价是每像素多 8 bit，Godot 不用 stencil 也无害。**Android** 还多一条 `antialias (cached true)`：宿主实际开着 MSAA，我们改不了，但它很可能是启动期 41.6fps 的一个因素，评估 DPR 时要一并计入。待办：对这两组组合做白名单，否则将来真正的属性不匹配（`depth` 等）会被噪音盖掉。
 - **宿主仍缺 `FormData` / `structuredClone` / `TextDecoderStream`**：仓库内零引用（只出现在 `web_compat.js` 的 watchlist），不影响启动；游戏侧若用 FormData 上传会直接 ReferenceError，需在 USAGE 明示或补最小桩。
@@ -255,7 +251,7 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 - **分包占位文件沿用微信/抖音的零字节行为**：真机 1.0.7 确认 CLI 上传接受零字节占位（`engine/game.js`、`subpacks/game.js`），无需把 taptap 加入 `zero_byte_allowed` 排除项。
 - **宿主 FS 调用可能「永不回答」，启动不能依赖它**（dev 1.0.42 回归教训）：把 `_stat` 的 Node 形态提前成首选后，`fs.stat(path, cb)` 在 iOS 与 Android 上既不应答也不抛错 → `restorePersistentPaths` 永不 settle → 加载卡死在 `5/7 从宿主持久目录恢复`，两平台都进不了游戏（帧率探针仍在打点，很容易误判成「只是慢」）。修复两层：`_stat` 保持 options 首选且每次尝试都带 deadline（默认 1000ms，`this._statTimeoutMs` 可覆写），loader 再给整个恢复加 8000ms 兜底，超时/失败就 `console.warn` 并降级为空 user 目录继续启动。**规则：任何宿主回调都要按「可能永不返回」处理。**
 - **`_stat` 的调用形态要缓存**：TapTap Android 宿主把微信形态 `fs.stat({path})` 的整个 options 对象丢给 Node `fs.stat`，该形态**永远失败**（`path must be of type string, Buffer, or URL`），只有 Node 形态 `fs.stat(path, cb)` 能通。dev 1.0.41 日志里每个 `/userfs` 文件都在回写时先炸一对宿主错误日志（32 文件 = 32 对）。现在 `_stat` 按「options（已证）→ Node → filePath」顺序尝试，记住第一次成功的形态，失败一次即固化为该 runtime 的形态，既消掉噪音也省掉每文件一次多余往返。
-- **`supportTier: beta`**：Android 真机已验证渲染/输入/JS Bridge/InnerAudio；iOS 真机（dev 1.0.40）已验证渲染/输入（进游戏 + 点击生效），dev 1.0.41 起持久化确认（恢复 32 条 + 回写成功）；引擎 WebAudio 已定性为「iOS 通 / Android ScriptProcessor 残缺」；TapTap 开放能力（分享板/成就/云存档/排行榜/支付/小组件/对战）、`updateManager` 与 host DPR 拆分仍未验收。
+- **`supportTier: beta`**：Android 真机已验证渲染/输入/JS Bridge/InnerAudio；iOS 真机（dev 1.0.40）已验证渲染/输入（进游戏 + 点击生效），dev 1.0.41 起持久化确认（恢复 32 条 + 回写成功），dev 1.0.44 起 JS Bridge 确认（`tap=object` / `mini_game=true`），InnerAudio 播放链路已确认、听感待补；引擎 WebAudio 已定性为「iOS 通 / Android ScriptProcessor 残缺」；TapTap 开放能力（分享板/成就/云存档/排行榜/支付/小组件/对战）、`updateManager` 与 host DPR 拆分仍未验收。
 
 ## 7. 后续阶段（Phase 2–4 待办）
 
