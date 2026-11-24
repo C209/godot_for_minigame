@@ -69,14 +69,14 @@
           "engineWebAudio": "unsupported-host",
           "backingStore": "1x"
         },
-        "ios": {
-          "rendering": "verified",
-          "input": "verified",
-          "jsBridge": "verified",
-          "innerAudio": "pending",
-          "engineWebAudio": "verified",
-          "backingStore": "1x"
-        }
+    "ios": {
+      "rendering": "verified",
+      "input": "verified",
+      "jsBridge": "verified",
+      "innerAudio": "verified",
+      "engineWebAudio": "verified",
+      "backingStore": "1x"
+    }
       }
     }
   },

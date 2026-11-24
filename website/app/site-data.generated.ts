@@ -72,7 +72,7 @@ export const releaseData = {
           "rendering": "verified",
           "input": "verified",
           "jsBridge": "verified",
-          "innerAudio": "pending",
+          "innerAudio": "verified",
           "engineWebAudio": "verified",
           "backingStore": "1x"
         }

@@ -122,7 +122,7 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 | lifecycle | `tap.onShow()` / `tap.onHide()` | 【确认】← life-cycle 文档 |
 | runtimeError | `tap.onError()` | 【推断】 |
 | webAudio | `tap.createWebAudioContext()`（或 getAudioContext）。真机确认存在；**Android 的 ScriptProcessor 节点残缺**（不回调 `onaudioprocess`、不暴露 `bufferSize`），iOS 完整可用（详见 §5 待验证第 2 条的探针对照表） | 【已确认】Android ⚠️ / iOS ✅ |
-| innerAudio | `tap.createInnerAudioContext()`。真机 dev 1.0.37 确认可发声（经 `MiniGameSDK.inner_audio_*`） | 【已确认】✅ |
+| innerAudio | `tap.createInnerAudioContext()`。真机确认可发声：Android dev 1.0.37、iOS dev 1.0.45（均经 `MiniGameSDK.inner_audio_*`），1.0.45 另确认暂停/续播生效 | 【已确认】✅ 双端 |
 | webAssembly | 见 §1（走 `WXWebAssembly` 原生桥） | 【已确认】✅ |
 
 > **非 Unity 引擎适配路径（关键证据）**：官方「Cocos/Laya/Egret 引擎适配」文档明确，非 Unity 引擎**自己构造 document 适配层**（`document.createElement` 返回 `tap.createCanvas`/`tap.createImage`/audio/video），用 `tap` API 抹平浏览器差异（touch/缓存/音频/图片/socket/request），开放能力再主动走 `tap` API。**Godot 的 `adapter.js` 正是这一性质**——等价于 Cocos/Laya/Egret 路径，不依赖 UnityPlugin，也不依赖团结容器 `tj`。Unity SDK 走 `tj.*`+UnityPlugin 是「复用微信快适配」的实现选择，非唯一途径。
@@ -199,7 +199,7 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 
 ### 仍待验证 / 已知限制
 - **iOS JS Bridge 已在 dev 1.0.44 确认（2026-11-23）**：真机日志 `[Probe] bridge platform=taptap mini_game=true tap=object error=`，`support-matrix` 的 `ios.jsBridge` 已改 `verified`；同一探针在 Android 上结果一致。
-- **iOS InnerAudio 只差「出声」这一条**：dev 1.0.44 探针显示 `createInnerAudioContext ok=true`、`play ok=true`，`canplay` / `play` 事件都触发，`+0.6s` 的 `getState` 里 `currentTime=0.557`（起点 0.005），播放时钟按实时推进。demo 的自动停止在 0.85s 触发（`stop` @ 0.557），所以这次没看到 `ended`；要补这条，在 Demo 的 Inner Audio 区单独按 `Play`（不会自动停）即可。**矩阵仍留 `pending`**：回调与时钟正常不等于扬声器有声，听感确认还没做。
+- **iOS InnerAudio 已在 dev 1.0.45 确认出声与暂停/续播（2026-11-24）**：dev 1.0.44 的探针已证明 `createInnerAudioContext ok=true`、`play ok=true`、`canplay` / `play` 事件齐全、`currentTime` 按实时推进；dev 1.0.45 在同一链路补上了 `ended` 与人耳听感确认——两端都能听到 demo-tone，`pause` @ 0.339 → `play` 从 0.344 续播、`pause` @ 0.472 → `play` 从 0.477 续播，事件链 `canplay → play → waiting → pause → ended → seeking → seeked → stop` 全触发。`support-matrix` 的 `ios.innerAudio` 已改 `verified`，两端 `innerAudio` 至此均为 `verified`。
 - **iOS 低档机内存**：dev 1.0.40 已在 iPhone 上跑通 demo（渲染/输入），但 <1G 内存低档机与长时间运行的内存表现仍未压测。
 - **引擎 WebAudio 混音按平台分裂，归因已由探针证实（dev 1.0.41 双平台）**：iOS 可用、Android 不可用，且 Android 的故障点已收敛到 **ScriptProcessor 这一个节点**（不是整条音频流水线）：
 
@@ -251,7 +251,7 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 - **分包占位文件沿用微信/抖音的零字节行为**：真机 1.0.7 确认 CLI 上传接受零字节占位（`engine/game.js`、`subpacks/game.js`），无需把 taptap 加入 `zero_byte_allowed` 排除项。
 - **宿主 FS 调用可能「永不回答」，启动不能依赖它**（dev 1.0.42 回归教训）：把 `_stat` 的 Node 形态提前成首选后，`fs.stat(path, cb)` 在 iOS 与 Android 上既不应答也不抛错 → `restorePersistentPaths` 永不 settle → 加载卡死在 `5/7 从宿主持久目录恢复`，两平台都进不了游戏（帧率探针仍在打点，很容易误判成「只是慢」）。修复两层：`_stat` 保持 options 首选且每次尝试都带 deadline（默认 1000ms，`this._statTimeoutMs` 可覆写），loader 再给整个恢复加 8000ms 兜底，超时/失败就 `console.warn` 并降级为空 user 目录继续启动。**规则：任何宿主回调都要按「可能永不返回」处理。**
 - **`_stat` 的调用形态要缓存**：TapTap Android 宿主把微信形态 `fs.stat({path})` 的整个 options 对象丢给 Node `fs.stat`，该形态**永远失败**（`path must be of type string, Buffer, or URL`），只有 Node 形态 `fs.stat(path, cb)` 能通。dev 1.0.41 日志里每个 `/userfs` 文件都在回写时先炸一对宿主错误日志（32 文件 = 32 对）。现在 `_stat` 按「options（已证）→ Node → filePath」顺序尝试，记住第一次成功的形态，失败一次即固化为该 runtime 的形态，既消掉噪音也省掉每文件一次多余往返。
-- **`supportTier: beta`**：Android 真机已验证渲染/输入/JS Bridge/InnerAudio；iOS 真机（dev 1.0.40）已验证渲染/输入（进游戏 + 点击生效），dev 1.0.41 起持久化确认（恢复 32 条 + 回写成功），dev 1.0.44 起 JS Bridge 确认（`tap=object` / `mini_game=true`），InnerAudio 播放链路已确认、听感待补；引擎 WebAudio 已定性为「iOS 通 / Android ScriptProcessor 残缺」；TapTap 开放能力（分享板/成就/云存档/排行榜/支付/小组件/对战）、`updateManager` 与 host DPR 拆分仍未验收。
+- **`supportTier: beta`**：Android 真机已验证渲染/输入/JS Bridge/InnerAudio；iOS 真机（dev 1.0.40）已验证渲染/输入（进游戏 + 点击生效），dev 1.0.41 起持久化确认（恢复 32 条 + 回写成功），dev 1.0.44 起 JS Bridge 确认（`tap=object` / `mini_game=true`），dev 1.0.45 起 InnerAudio 出声与暂停/续播确认（两端均可听）；引擎 WebAudio 已定性为「iOS 通 / Android ScriptProcessor 残缺」；TapTap 开放能力（分享板/成就/云存档/排行榜/支付/小组件/对战）、`updateManager` 与 host DPR 拆分仍未验收。
 
 ## 7. 后续阶段（Phase 2–4 待办）
 
