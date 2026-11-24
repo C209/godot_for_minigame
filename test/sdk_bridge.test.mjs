@@ -13,12 +13,15 @@ function moduleUrl(source) {
 async function loadSdkWithApi(api, platform = "wechat", options = {}) {
   delete globalThis.wx;
   delete globalThis.tt;
+  delete globalThis.tap;
   delete globalThis.TTMinis;
   delete globalThis.GameGlobal;
   delete globalThis.__godotMiniGamePlatformRuntime;
   delete globalThis.PlatformRuntime;
   if (platform === "douyin") {
     globalThis.tt = api;
+  } else if (platform === "taptap") {
+    globalThis.tap = api;
   } else if (platform === "tiktok") {
     if (options.gameGlobalProvider) globalThis.GameGlobal = { TTMinis: { game: api } };
     else globalThis.TTMinis = { game: api };
@@ -4464,5 +4467,111 @@ await testCustomerServiceAndSubscribeWrappersReportUnsupportedMethods();
 await testUpdateAndMemoryWrappersReportUnsupportedMethods();
 await testWindowAndUnhandledRejectionWrappersReportUnsupportedMethods();
 await testScreenWrappersReportUnsupportedMethods();
+
+async function testTapShareboardWrappers() {
+  const calls = [];
+  let offCalls = 0;
+  let listener = null;
+  const api = {
+    showShareboard(options) {
+      calls.push(["showShareboard", options]);
+      options.success({ errMsg: "showShareboard:ok" });
+    },
+    setShareboardHidden(options) {
+      calls.push(["setShareboardHidden", options]);
+      options.success({ errMsg: "setShareboardHidden:ok" });
+    },
+    openFriendList() { calls.push(["openFriendList"]); },
+    onShareMessage(arg) { listener = arg; },
+    offShareMessage() { offCalls += 1; },
+  };
+  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.tapShowShareboard(
+    JSON.stringify({ templateId: "tpl_42", sceneParam: "level=3&score=1200" }),
+    (...args) => { result = args; },
+  );
+  assert.deepEqual(result, ["showShareboard", true, '{"errMsg":"showShareboard:ok"}', ""]);
+  assert.equal(calls[0][0], "showShareboard");
+  assert.equal(calls[0][1].templateId, "tpl_42");
+  assert.equal(calls[0][1].sceneParam, "level=3&score=1200");
+  assert.equal(typeof calls[0][1].success, "function");
+
+  result = null;
+  sdk.tapShowShareboard(JSON.stringify({ sceneParam: "no-template" }), (...args) => { result = args; });
+  assert.deepEqual(result, ["showShareboard", false, "", "showShareboard requires a templateId"]);
+  assert.equal(calls.length, 1, "a missing templateId must not reach the host");
+
+  const failingApi = {
+    showShareboard(options) {
+      options.fail({ errCode: 1004, errMsg: "showShareboard:fail template audit pending" });
+    },
+  };
+  const { GodotSDK: FailingSDK } = await loadSdkWithApi(failingApi, "taptap");
+  result = null;
+  new FailingSDK().tapShowShareboard(
+    JSON.stringify({ templateId: "tpl_unapproved" }), (...args) => { result = args; });
+  assert.deepEqual(result, [
+    "showShareboard", false, "", "code=1004 showShareboard:fail template audit pending",
+  ]);
+
+  result = null;
+  sdk.tapSetShareboardHidden(true, (...args) => { result = args; });
+  assert.deepEqual(result, ["setShareboardHidden", true, '{"errMsg":"setShareboardHidden:ok"}', ""]);
+  assert.equal(calls[1][1].hidden, true);
+
+  result = null;
+  sdk.tapOpenFriendList((...args) => { result = args; });
+  assert.deepEqual(result, ["openFriendList", true, "{}", ""]);
+  assert.deepEqual(calls[2], ["openFriendList"]);
+
+  // The host takes a listener object here; a bare function never fires.
+  sdk.tapOnShareMessage((...args) => { result = args; });
+  assert.equal(typeof listener, "object", "onShareMessage must receive a listener object");
+  assert.equal(typeof listener.success, "function");
+  assert.equal(typeof listener.fail, "function");
+  listener.success({ channel: "tapTap" });
+  assert.deepEqual(result, ["tapTap", "", '{"channel":"tapTap"}']);
+  listener.fail({ errMsg: "share:fail user cancel" });
+  assert.deepEqual(result, ["", "share:fail user cancel", '{"errMsg":"share:fail user cancel"}']);
+
+  sdk.tapOffShareMessage();
+  assert.equal(offCalls, 1);
+}
+
+async function testTapShareboardRejectsOtherHosts() {
+  const calls = [];
+  const api = {
+    showShareboard() { calls.push("showShareboard"); },
+    setShareboardHidden() { calls.push("setShareboardHidden"); },
+    openFriendList() { calls.push("openFriendList"); },
+    onShareMessage() { calls.push("onShareMessage"); },
+    offShareMessage() { calls.push("offShareMessage"); },
+  };
+  const { GodotSDK } = await loadSdkWithApi(api, "wechat");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.tapShowShareboard(JSON.stringify({ templateId: "tpl_1" }), (...args) => { result = args; });
+  assert.deepEqual(result, ["showShareboard", false, "", "showShareboard is only supported on TapTap"]);
+  result = null;
+  sdk.tapSetShareboardHidden(false, (...args) => { result = args; });
+  assert.deepEqual(result, [
+    "setShareboardHidden", false, "", "setShareboardHidden is only supported on TapTap",
+  ]);
+  result = null;
+  sdk.tapOpenFriendList((...args) => { result = args; });
+  assert.deepEqual(result, ["openFriendList", false, "", "openFriendList is only supported on TapTap"]);
+  result = null;
+  sdk.tapOnShareMessage((...args) => { result = args; });
+  assert.deepEqual(result, ["", "onShareMessage is only supported on TapTap", ""]);
+  sdk.tapOffShareMessage();
+  assert.deepEqual(calls, [], "non-TapTap hosts must not receive shareboard calls");
+}
+
+await testTapShareboardWrappers();
+await testTapShareboardRejectsOtherHosts();
 
 console.log("sdk_bridge.test.mjs: ok");

@@ -174,7 +174,7 @@ entry points, configuration, validation, and release requirements.
 
 TikTok Native requires client 43.4.0 or newer for `TTWebAssembly`. The HTML
 runtime has a different boot and configuration contract and is intentionally
-outside the v0.3 exporter. A method present in the 230-method SDK surface is not
+outside the v0.3 exporter. A method present in the 235-method SDK surface is not
 automatically supported by all four hosts: same-name APIs pass through
 capability gating, while payments and other host-specific behavior require an
 explicit provider mapping.

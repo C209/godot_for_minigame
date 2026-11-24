@@ -256,5 +256,5 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 ## 7. 后续阶段（Phase 2–4 待办）
 
 - Phase 2（已完成）：`USAGE` / `USAGE_zh` 的 TapTap 导出与上传步骤（`taptap-cli` 上传开发测试包 + 后台扫码）已补齐；可选的 `parallelPreloadSubpackages` 启动优化仍未启用。
-- Phase 3：按 Unity Wrapper 语义实现 TapTap 特有能力的 GDScript + JS bridge，逐项真机核对签名。
+- Phase 3：按 Unity Wrapper 语义实现 TapTap 特有能力的 GDScript + JS bridge，逐项真机核对签名。**逐项签名/映射/真机判据见 [taptap-apis.md](taptap-apis.md)**（分享板已实现待真机，成就/排行榜/云存档/支付/对战/小组件未开始）。
 - Phase 4：官网/文档平台矩阵更新、真机回归（iOS 低档机内存、iOS 上的 JS Bridge/InnerAudio、音频驱动分支、`canvas` 字体）。

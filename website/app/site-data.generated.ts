@@ -66,6 +66,7 @@ export const releaseData = {
           "jsBridge": "verified",
           "innerAudio": "verified",
           "engineWebAudio": "unsupported-host",
+          "shareboard": "pending",
           "backingStore": "1x"
         },
         "ios": {
@@ -74,6 +75,7 @@ export const releaseData = {
           "jsBridge": "verified",
           "innerAudio": "verified",
           "engineWebAudio": "verified",
+          "shareboard": "pending",
           "backingStore": "1x"
         }
       }

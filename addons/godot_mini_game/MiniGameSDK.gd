@@ -38,6 +38,14 @@ signal interstitial_ad_result(success: bool, error: String)
 signal payment_result(success: bool, error: String)
 signal tiktok_mission_result(action: String, success: bool, can_receive_reward: bool, data_json: String, error: String)
 
+## Reports the outcome of a TapTap shareboard call. For showShareboard the
+## success flag only covers opening the panel; share results arrive through
+## [signal tap_share_message].
+signal tap_shareboard_result(operation: String, success: bool, data_json: String, error: String)
+## Reports a TapTap share result: the channel the player shared to, or the
+## host error message when the share failed.
+signal tap_share_message(channel: String, err_msg: String, data_json: String)
+
 signal keyboard_event(event_type: String, value: String)
 
 signal http_response(status_code: int, data: String, error: String)
@@ -806,6 +814,69 @@ func show_share_menu() -> void:
 func hide_share_menu() -> void:
 	if _sdk:
 		_sdk.hideShareMenu()
+
+
+# ── TapTap Shareboard ─────────────────────────────────────────────
+
+## TapTap only. Opens the platform shareboard. `template_id` is the
+## `template_code` of an approved share template from the TapTap developer
+## console. The result only reports that the panel was opened; the actual
+## share outcome arrives through [signal tap_share_message].
+func taptap_show_shareboard(template_id: String, scene_param: String = "") -> void:
+	if not _sdk:
+		tap_shareboard_result.emit("showShareboard", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapShowShareboard(
+		JSON.stringify({"templateId": template_id, "sceneParam": scene_param}),
+		_track_oneshot(_on_tap_shareboard.bind("showShareboard")))
+
+
+## TapTap only. Hides (true) or shows (false) the share entry in the platform
+## user menu. It does not affect taptap_show_shareboard().
+func taptap_set_shareboard_hidden(hidden: bool) -> void:
+	if not _sdk:
+		tap_shareboard_result.emit("setShareboardHidden", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapSetShareboardHidden(
+		hidden, _track_oneshot(_on_tap_shareboard.bind("setShareboardHidden")))
+
+
+## TapTap only. Opens the platform friend list. The host exposes no callback
+## for this call, so success only means it was dispatched.
+func taptap_open_friend_list() -> void:
+	if not _sdk:
+		tap_shareboard_result.emit("openFriendList", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapOpenFriendList(_track_oneshot(_on_tap_shareboard.bind("openFriendList")))
+
+
+## TapTap only. Subscribes to share results. Repeated calls keep a single
+## persistent bridge callback.
+func taptap_on_share_message() -> void:
+	if not _sdk:
+		return
+	_sdk.tapOnShareMessage(_track_persistent(_on_tap_share_message))
+
+
+## TapTap only. Removes the listener registered by taptap_on_share_message().
+func taptap_off_share_message() -> void:
+	if _sdk:
+		_sdk.tapOffShareMessage()
+
+
+func _on_tap_shareboard(args: Array, operation: String) -> void:
+	tap_shareboard_result.emit(
+		operation,
+		_b(args[1]) if args.size() > 1 else false,
+		_s(args[2]) if args.size() > 2 else "",
+		_s(args[3]) if args.size() > 3 else "")
+
+
+func _on_tap_share_message(args: Array) -> void:
+	tap_share_message.emit(
+		_s(args[0]) if args.size() > 0 else "",
+		_s(args[1]) if args.size() > 1 else "",
+		_s(args[2]) if args.size() > 2 else "")
 
 
 # ── Rewarded Video Ad ─────────────────────────────────────────────

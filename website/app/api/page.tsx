@@ -125,7 +125,7 @@ const platformLabels = {
   },
   bridge: {
     label: "统一桥接",
-    detail: "运行时按目标平台分发，但不代表三个宿主均已验证该能力。",
+    detail: "运行时按目标平台分发，但不代表四个宿主均已验证该能力。",
   },
   "wechat-docs": {
     label: "微信文档",
@@ -142,6 +142,10 @@ const platformLabels = {
   tiktok: {
     label: "TikTok",
     detail: "TikTok 平台能力；调用前会检查宿主支持情况，发布前仍需真机验证。",
+  },
+  taptap: {
+    label: "TapTap",
+    detail: "TapTap 平台能力；需在开发者中心准备对应资源（如分享模板），发布前必须真机验证。",
   },
 } as const;
 

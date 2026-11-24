@@ -421,7 +421,7 @@ taptap-cli test-qr-code --dev-id <DEV_ID> --app-id <APP_ID> \
 
 所有异步接口都通过 **信号** 回调，不要用 await；同步接口（`storage_*`、`vibrate_*`）直接返回。
 
-230 个公开方法和 86 个信号描述的是完整 Bridge 接口面，不代表四个平台全部兼容。
+235 个公开方法和 88 个信号描述的是完整 Bridge 接口面，不代表四个平台全部兼容。
 同名 API 只有在所选 `wx`、`tt`、`TTMinis.game` 或 `tap` 宿主暴露对应能力时才会分发；
 支付等平台特有流程走显式映射。依赖某个接口前请调用 `can_i_use()`，并用目标宿主
 和目标版本实测。
@@ -1377,6 +1377,34 @@ MiniGameSDK.share_app(
     "inviter=%s" % player_id,
 )
 ```
+
+### TapTap 分享板
+
+TapTap 用「分享板」替代微信式的 `shareAppMessage`。`template_id` 填开发者中心的分享模板 `template_code`，模板**必须审核通过（status = 1）**才能拉起；`scene_param` 是可选字符串，卡片回流后可从 `get_launch_options()` 的 `query.sceneParam` 读到（TapTap 1.7.0+）。
+
+```gdscript
+# show_shareboard 只表示「面板已打开」，真实分享结果走 tap_share_message
+MiniGameSDK.tap_share_message.connect(
+    func(channel: String, err_msg: String, data_json: String) -> void:
+        if err_msg.is_empty():
+            print("分享渠道：", channel)
+        else:
+            print("分享失败：", err_msg))
+
+MiniGameSDK.taptap_on_share_message()
+MiniGameSDK.taptap_show_shareboard("你的模板 template_code", "level=3&score=1200")
+
+# 隐藏 / 恢复用户菜单里的分享入口（不影响主动拉起的面板）
+MiniGameSDK.taptap_set_shareboard_hidden(true)
+
+# 打开好友列表
+MiniGameSDK.taptap_open_friend_list()
+
+# 不再需要时注销监听
+MiniGameSDK.taptap_off_share_message()
+```
+
+非 TapTap 平台调用不会静默失败：`tap_shareboard_result` 回 `success=false`，`error` 为 `... is only supported on TapTap`；宿主缺对应方法时回 `tap.<method> is not supported`。逐项签名与真机判据见 [taptap-apis.md](taptap-apis.md)。
 
 ### 兼容性、系统信息与安全区
 

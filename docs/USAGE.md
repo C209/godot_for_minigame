@@ -458,7 +458,7 @@ The plugin registers `MiniGameSDK` as an autoload. In non-mini-game environments
 
 Async calls deliver results via **signals** — no `await`. Sync calls (`storage_*`, `vibrate_*`) return immediately.
 
-The 230 public methods and 86 signals are the complete bridge surface, not a
+The 235 public methods and 88 signals are the complete bridge surface, not a
 blanket four-platform compatibility claim. Same-name APIs are dispatched to
 `wx`, `tt`, `TTMinis.game`, or `tap` only when the selected host exposes the
 required capability. Payments and other platform-specific flows use explicit
@@ -1423,6 +1423,35 @@ MiniGameSDK.share_app(
     "inviter=%s" % player_id,
 )
 ```
+
+### TapTap shareboard
+
+TapTap replaces WeChat-style `shareAppMessage` with a shareboard. `template_id` is the `template_code` of a share template from the developer console and **must be approved (status = 1)** before the panel opens. `scene_param` is an optional string; after the card is opened it is readable from `get_launch_options().query.sceneParam` (TapTap 1.7.0+).
+
+```gdscript
+# show_shareboard only reports that the panel opened; the real outcome
+# arrives through tap_share_message.
+MiniGameSDK.tap_share_message.connect(
+    func(channel: String, err_msg: String, data_json: String) -> void:
+        if err_msg.is_empty():
+            print("shared to: ", channel)
+        else:
+            print("share failed: ", err_msg))
+
+MiniGameSDK.taptap_on_share_message()
+MiniGameSDK.taptap_show_shareboard("your template_code", "level=3&score=1200")
+
+# Hide / restore the share entry in the platform user menu
+MiniGameSDK.taptap_set_shareboard_hidden(true)
+
+# Open the platform friend list
+MiniGameSDK.taptap_open_friend_list()
+
+# Stop listening when no longer needed
+MiniGameSDK.taptap_off_share_message()
+```
+
+Calls on other hosts are never silent: `tap_shareboard_result` reports `success=false` with `... is only supported on TapTap`, and a missing host method yields `tap.<method> is not supported`. Per-method signatures and real-device criteria live in [taptap-apis.md](taptap-apis.md).
 
 ### Compatibility, system info, and safe area
 

@@ -1182,6 +1182,136 @@ class GodotSDK {
     });
   }
 
+  // ── TapTap Shareboard ──────────────────────────────────────────
+
+  /**
+   * Runner shared by the TapTap shareboard calls. `methodName` is the tap.*
+   * entry point; `options` is merged with the callback trio.
+   *
+   * Note: showShareboard only reports that the panel was opened — the actual
+   * share outcome arrives through onShareMessage. See docs/taptap-apis.md.
+   */
+  _taptapShareboard(action, methodName, options, callback) {
+    if (PlatformRuntime.platform !== "taptap") {
+      callback(action, false, "", `${action} is only supported on TapTap`);
+      return;
+    }
+    const method = _api[methodName];
+    if (typeof method !== "function") {
+      callback(action, false, "", _unsupported(methodName));
+      return;
+    }
+
+    let settled = false;
+    const finish = (ok, data, error) => {
+      if (settled) return;
+      settled = true;
+      callback(action, !!ok, ok ? _jsonSafe(data || {}) : "", ok ? "" : _fmtErr(error));
+    };
+
+    try {
+      const result = method.call(_api, {
+        ...(options || {}),
+        success: (res) => finish(true, res || {}),
+        fail: (error) => finish(false, null, error),
+        complete: (res) => {
+          if (!settled && res && typeof res.errMsg === "string" && res.errMsg.includes(":fail")) {
+            finish(false, null, res);
+          }
+        },
+      });
+      if (result && typeof result.then === "function") {
+        result.then((res) => finish(true, res || {})).catch((error) => finish(false, null, error));
+      }
+    } catch (e) {
+      finish(false, null, e);
+    }
+  }
+
+  /** paramsJson: { templateId, sceneParam? } — templateId is the approved
+   * `template_code` from the TapTap developer console. */
+  tapShowShareboard(paramsJson, callback) {
+    const params = _jsonObject(paramsJson);
+    const templateId = typeof params.templateId === "string" ? params.templateId.trim() : "";
+    if (!templateId) {
+      callback("showShareboard", false, "", "showShareboard requires a templateId");
+      return;
+    }
+    const options = { templateId };
+    if (params.sceneParam != null && params.sceneParam !== "") {
+      options.sceneParam = typeof params.sceneParam === "string"
+        ? params.sceneParam
+        : _jsonSafe(params.sceneParam);
+    }
+    this._taptapShareboard("showShareboard", "showShareboard", options, callback);
+  }
+
+  tapSetShareboardHidden(hidden, callback) {
+    this._taptapShareboard(
+      "setShareboardHidden", "setShareboardHidden", { hidden: !!hidden }, callback,
+    );
+  }
+
+  /** TapTap exposes no callback for openFriendList, so success means the call
+   * was dispatched — mirroring the Unity wrapper (`Tap_openFriendList`). */
+  tapOpenFriendList(callback) {
+    if (PlatformRuntime.platform !== "taptap") {
+      callback("openFriendList", false, "", "openFriendList is only supported on TapTap");
+      return;
+    }
+    const method = _api.openFriendList;
+    if (typeof method !== "function") {
+      callback("openFriendList", false, "", _unsupported("openFriendList"));
+      return;
+    }
+    try {
+      method.call(_api);
+      callback("openFriendList", true, "{}", "");
+    } catch (e) {
+      callback("openFriendList", false, "", _fmtErr(e));
+    }
+  }
+
+  /**
+   * TapTap takes a listener *object* ({ success, fail, complete }), not a
+   * function — passing a bare function never fires and never errors.
+   * See docs/taptap-apis.md §1.1.
+   */
+  tapOnShareMessage(callback) {
+    if (PlatformRuntime.platform !== "taptap") {
+      callback("", "onShareMessage is only supported on TapTap", "");
+      return;
+    }
+    if (typeof _api.onShareMessage !== "function") {
+      callback("", _unsupported("onShareMessage"), "");
+      return;
+    }
+    const emit = (res) => {
+      const payload = (res && typeof res === "object") ? res : {};
+      const channel = payload.channel == null ? "" : String(payload.channel);
+      const errMsg = payload.errMsg == null ? "" : String(payload.errMsg);
+      callback(channel, errMsg, _jsonSafe(payload));
+    };
+    this._tapShareMessageListener = { success: emit, fail: emit };
+    try {
+      _api.onShareMessage(this._tapShareMessageListener);
+    } catch (e) {
+      this._tapShareMessageListener = null;
+      callback("", _fmtErr(e), "");
+    }
+  }
+
+  tapOffShareMessage() {
+    this._tapShareMessageListener = null;
+    if (PlatformRuntime.platform !== "taptap") return;
+    if (typeof _api.offShareMessage !== "function") return;
+    try {
+      _api.offShareMessage();
+    } catch (e) {
+      console.warn("[SDK] offShareMessage:", _fmtErr(e));
+    }
+  }
+
   // ── Rewarded Video Ad ──────────────────────────────────────────
 
   createRewardedAd(adId, callback) {

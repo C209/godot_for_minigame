@@ -159,6 +159,8 @@ func _init() -> void:
 		"screen_recording_changed": [],
 		"visual_effect": [],
 		"modal_result": [],
+		"tap_shareboard": [],
+		"tap_share_message": [],
 	}
 	sdk.generic_api_result.connect(func(api_name: String, success: bool, data_json: String, error: String) -> void:
 		holder["generic"] = [api_name, success, data_json, error]
@@ -369,6 +371,12 @@ func _init() -> void:
 	)
 	sdk.modal_result.connect(func(confirmed: bool) -> void:
 		holder["modal_result"] = [confirmed]
+	)
+	sdk.tap_shareboard_result.connect(func(operation: String, success: bool, data_json: String, error: String) -> void:
+		holder["tap_shareboard"] = [operation, success, data_json, error]
+	)
+	sdk.tap_share_message.connect(func(channel: String, err_msg: String, data_json: String) -> void:
+		holder["tap_share_message"] = [channel, err_msg, data_json]
 	)
 
 	sdk.show_modal("Confirm", "Continue?")
@@ -759,6 +767,20 @@ func _init() -> void:
 	_assert_eq(sdk.stop_screen_recording_state_listener(), false, "stop_screen_recording_state_listener fallback")
 	sdk.set_visual_effect_on_capture("hidden")
 	_assert_eq(holder["visual_effect"], ["hidden", false, MiniGameSDKScript.NOT_IN_RUNTIME], "set_visual_effect_on_capture fallback")
+
+	sdk.taptap_show_shareboard("tpl_1", "level=1")
+	_assert_eq(holder["tap_shareboard"], ["showShareboard", false, "", MiniGameSDKScript.NOT_IN_RUNTIME], "taptap_show_shareboard fallback")
+	sdk.taptap_set_shareboard_hidden(true)
+	_assert_eq(holder["tap_shareboard"], ["setShareboardHidden", false, "", MiniGameSDKScript.NOT_IN_RUNTIME], "taptap_set_shareboard_hidden fallback")
+	sdk.taptap_open_friend_list()
+	_assert_eq(holder["tap_shareboard"], ["openFriendList", false, "", MiniGameSDKScript.NOT_IN_RUNTIME], "taptap_open_friend_list fallback")
+	sdk.taptap_on_share_message()
+	sdk.taptap_off_share_message()
+	_assert_eq(holder["tap_share_message"], [], "tap share listener stays silent outside a runtime")
+	sdk._on_tap_shareboard(["showShareboard", true, "{\"errMsg\":\"ok\"}", ""], "showShareboard")
+	_assert_eq(holder["tap_shareboard"], ["showShareboard", true, "{\"errMsg\":\"ok\"}", ""], "tap shareboard callback conversion")
+	sdk._on_tap_share_message(["tapTap", "", "{\"channel\":\"tapTap\"}"])
+	_assert_eq(holder["tap_share_message"], ["tapTap", "", "{\"channel\":\"tapTap\"}"], "tap share message callback conversion")
 
 	sdk._on_accelerometer_changed([1, "2", -3.0, "{\"x\":1,\"y\":2,\"z\":-3}"])
 	_assert_eq(holder["accelerometer"], [1.0, 2.0, -3.0, "{\"x\":1,\"y\":2,\"z\":-3}"], "accelerometer callback conversion")
