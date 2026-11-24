@@ -4574,4 +4574,285 @@ async function testTapShareboardRejectsOtherHosts() {
 await testTapShareboardWrappers();
 await testTapShareboardRejectsOtherHosts();
 
+async function testTapAchievementWrappers() {
+  const calls = [];
+  const manager = {
+    toastEnable: true,
+    unlockAchievement(options) { calls.push(["unlock", options]); },
+    incrementAchievement(options) { calls.push(["increment", options]); },
+    showAchievements() { calls.push(["showAll"]); },
+    registerListener(listener) { calls.push(["listen"]); this.listener = listener; },
+    unregisterListener() { calls.push(["unlisten"]); },
+  };
+  const api = {
+    createAchievementManager(options) { calls.push(["create", options]); return manager; },
+  };
+  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.tapAchievementCreate(false, (...args) => { result = args; });
+  assert.deepEqual(result, ["create", true, "{}", ""]);
+  assert.deepEqual(calls[0], ["create", { toastEnable: false }]);
+
+  sdk.tapAchievementSetToastEnabled(true, (...args) => { result = args; });
+  assert.deepEqual(result, ["setToastEnabled", true, "{}", ""]);
+  assert.equal(manager.toastEnable, true);
+
+  sdk.tapAchievementUnlock("ach_1", (...args) => { result = args; });
+  assert.deepEqual(result, ["unlock", true, "{}", ""]);
+  assert.deepEqual(calls.at(-1), ["unlock", { achievementId: "ach_1" }]);
+
+  sdk.tapAchievementIncrement("ach_2", 3, (...args) => { result = args; });
+  assert.deepEqual(calls.at(-1), ["increment", { achievementId: "ach_2", steps: 3 }]);
+
+  sdk.tapAchievementShowAll((...args) => { result = args; });
+  assert.deepEqual(result, ["showAll", true, "{}", ""]);
+
+  let unlocked = null;
+  let failed = null;
+  sdk.tapAchievementListen((event, id, code, message, json) => {
+    if (event === "unlocked") unlocked = [id, code, json];
+    else failed = [id, code, message];
+  });
+  assert.deepEqual(calls.at(-1), ["listen"]);
+  manager.listener.onAchievementSuccess("ach_3", { points: 10 });
+  assert.deepEqual(unlocked, ["ach_3", "ach_3", '{"points":10}']);
+  manager.listener.onAchievementFailure("ach_4", 500, "not found");
+  assert.deepEqual(failed, ["ach_4", "500", "not found"]);
+
+  sdk.tapAchievementStopListening();
+  assert.deepEqual(calls.at(-1), ["unlisten"]);
+}
+
+async function testTapLeaderboardWrappers() {
+  const calls = [];
+  const manager = {};
+  for (const name of [
+    "openLeaderboard", "submitScores", "loadLeaderboardScores",
+    "loadCurrentPlayerLeaderboardScore", "loadPlayerCenteredScores",
+  ]) {
+    manager[name] = (params) => {
+      calls.push([name, params]);
+      params.callback.onSuccess({ ok: name });
+    };
+  }
+  const api = { getLeaderboardManager() { return manager; } };
+  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.tapLeaderboardOpen(JSON.stringify({ leaderboardId: "lb_1" }), (...args) => { result = args; });
+  assert.deepEqual(result, ["openLeaderboard", true, '{"ok":"openLeaderboard"}', ""]);
+  assert.equal(calls[0][1].leaderboardId, "lb_1");
+  assert.equal(typeof calls[0][1].callback.onSuccess, "function");
+  assert.equal(typeof calls[0][1].callback.onFailure, "function");
+
+  sdk.tapLeaderboardSubmitScores(JSON.stringify({ scores: [] }), (...args) => { result = args; });
+  sdk.tapLeaderboardLoadScores(JSON.stringify({}), (...args) => { result = args; });
+  sdk.tapLeaderboardLoadCurrentPlayerScore(JSON.stringify({}), (...args) => { result = args; });
+  sdk.tapLeaderboardLoadPlayerCenteredScores(JSON.stringify({}), (...args) => { result = args; });
+  assert.deepEqual(calls.map(([name]) => name), [
+    "openLeaderboard", "submitScores", "loadLeaderboardScores",
+    "loadCurrentPlayerLeaderboardScore", "loadPlayerCenteredScores",
+  ]);
+
+  manager.submitScores = (params) => params.callback.onFailure(1001, "invalid score");
+  sdk.tapLeaderboardSubmitScores(JSON.stringify({}), (...args) => { result = args; });
+  assert.deepEqual(result, ["submitScores", false, "", "code=1001 invalid score"]);
+}
+
+async function testTapCloudSaveWrappers() {
+  const calls = [];
+  const manager = {
+    createArchive(options) { calls.push(["createArchive", options]); options.success({ uuid: "u1" }); },
+    updateArchive(options) { calls.push(["updateArchive", options]); options.success({ uuid: "u1" }); },
+    getArchiveList(options) { calls.push(["getArchiveList", options]); options.success({ saves: [] }); },
+    getArchiveData(options) { calls.push(["getArchiveData", options]); options.fail("not found", 404); },
+    getArchiveCover(options) { calls.push(["getArchiveCover", options]); options.success({ filePath: "/c.png" }); },
+    deleteArchive(options) { calls.push(["deleteArchive", options]); options.success({ uuid: "u1" }); },
+  };
+  const api = { getCloudSaveManager() { return manager; } };
+  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.tapCloudSaveCreateArchive(JSON.stringify({
+    archiveMetaData: { name: "slot1", summary: "s", extra: "e", playtime: 60 },
+    archiveFilePath: "/save.dat",
+  }), (...args) => { result = args; });
+  assert.deepEqual(result, ["createArchive", true, '{"uuid":"u1"}', ""]);
+  assert.equal(calls[0][1].archiveMetaData.name, "slot1");
+  assert.equal(calls[0][1].archiveFilePath, "/save.dat");
+
+  sdk.tapCloudSaveGetArchiveList((...args) => { result = args; });
+  assert.deepEqual(result, ["getArchiveList", true, '{"saves":[]}', ""]);
+
+  // CloudSave reports failures as fail(errMsg, errno) — two positional args.
+  sdk.tapCloudSaveGetArchiveData(JSON.stringify({ archiveUUID: "u1" }), (...args) => { result = args; });
+  assert.deepEqual(result, ["getArchiveData", false, "", "code=404 not found"]);
+
+  sdk.tapCloudSaveGetArchiveCover(JSON.stringify({ archiveUUID: "u1" }), (...args) => { result = args; });
+  assert.deepEqual(result, ["getArchiveCover", true, '{"filePath":"/c.png"}', ""]);
+
+  sdk.tapCloudSaveDeleteArchive(JSON.stringify({ archiveUUID: "u1" }), (...args) => { result = args; });
+  assert.deepEqual(result, ["deleteArchive", true, '{"uuid":"u1"}', ""]);
+}
+
+async function testTapPaymentWrapper() {
+  const calls = [];
+  const api = {
+    requestPaymentGameItem(options) {
+      calls.push(options);
+      options.success({ errCode: 0, errMsg: "requestPaymentGameItem:ok" });
+    },
+  };
+  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.tapRequestPaymentGameItem(JSON.stringify({
+    signData: "{...}", paySig: "sig", signature: "user-sig",
+  }), (...args) => { result = args; });
+  assert.deepEqual(result, [true, 0, "requestPaymentGameItem:ok", '{"errCode":0,"errMsg":"requestPaymentGameItem:ok"}']);
+  assert.equal(calls[0].signData, "{...}");
+  assert.equal(calls[0].paySig, "sig");
+  assert.equal(typeof calls[0].success, "function");
+
+  result = null;
+  sdk.tapRequestPaymentGameItem(JSON.stringify({ paySig: "sig" }), (...args) => { result = args; });
+  assert.deepEqual(result, [
+    false, -1, "requestPaymentGameItem requires signData from your server", "",
+  ]);
+  assert.equal(calls.length, 1, "a request without signData must not reach the host");
+
+  const failingApi = {
+    requestPaymentGameItem(options) { options.fail({ errCode: 9001, errMsg: "pay:fail" }); },
+  };
+  const { GodotSDK: FailingSDK } = await loadSdkWithApi(failingApi, "taptap");
+  result = null;
+  new FailingSDK().tapRequestPaymentGameItem(JSON.stringify({ signData: "x" }), (...args) => { result = args; });
+  assert.deepEqual(result, [false, 9001, "pay:fail", ""]);
+}
+
+async function testTapWidgetWrappers() {
+  const calls = [];
+  const api = {
+    createHomeScreenWidget(options) {
+      calls.push(["create", options]);
+      options.success({ created: true });
+    },
+    hasHomeScreenWidgetAndPinned(options) {
+      calls.push(["has", options]);
+      options.success({ has: true, pinned: false });
+    },
+  };
+  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.tapCreateHomeScreenWidget((...args) => { result = args; });
+  assert.deepEqual(result, ["createHomeScreenWidget", true, '{"created":true}', ""]);
+  sdk.tapHasHomeScreenWidgetAndPinned((...args) => { result = args; });
+  assert.deepEqual(result, [
+    "hasHomeScreenWidgetAndPinned", true, '{"has":true,"pinned":false}', "",
+  ]);
+  assert.equal(calls.length, 2);
+  assert.equal(typeof calls[0][1].success, "function");
+}
+
+async function testTapBattleWrappers() {
+  const calls = [];
+  let listener = null;
+  const manager = {
+    connect(options) { calls.push(["connect", options]); options.success({ playerId: "p1" }); },
+    finalize() { calls.push(["finalize"]); },
+    getRoomList(options) {
+      calls.push(["getRoomList", options]);
+      options.fail({ errCode: 3, errMsg: "no room" });
+    },
+    registerListener(config) { listener = config; calls.push(["listen"]); },
+    unregisterListener() { calls.push(["unlisten"]); },
+  };
+  const api = { getOnlineBattleManager() { return manager; } };
+  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.tapBattleCreateManager((...args) => { result = args; });
+  assert.deepEqual(result, ["createManager", true, "{}", ""]);
+
+  sdk.tapBattleCall("connect", JSON.stringify({}), (...args) => { result = args; });
+  assert.deepEqual(result, ["connect", true, '{"playerId":"p1"}', ""]);
+  assert.equal(typeof calls[0][1].success, "function");
+
+  sdk.tapBattleCall("finalize", "", (...args) => { result = args; });
+  assert.deepEqual(result, ["finalize", true, "{}", ""]);
+  assert.deepEqual(calls.at(-1), ["finalize"]);
+
+  sdk.tapBattleCall("getRoomList", JSON.stringify({}), (...args) => { result = args; });
+  assert.deepEqual(result, ["getRoomList", false, "", "code=3 no room"]);
+
+  sdk.tapBattleCall("notARealOp", JSON.stringify({}), (...args) => { result = args; });
+  assert.deepEqual(result, ["notARealOp", false, "", 'battle operation "notARealOp" is not supported']);
+
+  const events = [];
+  sdk.tapBattleListen((event, json) => { events.push([event, json]); });
+  assert.equal(Object.keys(listener).length, 13);
+  assert.equal(typeof listener.onFrameReceived, "function");
+  listener.onFrameReceived({ frameId: 7 });
+  assert.deepEqual(events, [["onFrameReceived", '{"frameId":7}']]);
+
+  sdk.tapBattleStopListening();
+  assert.deepEqual(calls.at(-1), ["unlisten"]);
+}
+
+async function testTapOnlyApisRejectOtherHosts() {
+  const calls = [];
+  const api = {
+    createAchievementManager() { calls.push("achievement"); return {}; },
+    getLeaderboardManager() { calls.push("leaderboard"); return {}; },
+    getCloudSaveManager() { calls.push("cloudsave"); return {}; },
+    requestPaymentGameItem() { calls.push("payment"); },
+    createHomeScreenWidget() { calls.push("widget"); },
+    getOnlineBattleManager() { calls.push("battle"); return {}; },
+  };
+  const { GodotSDK } = await loadSdkWithApi(api, "wechat");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.tapAchievementUnlock("ach", (...args) => { result = args; });
+  assert.deepEqual(result, ["unlock", false, "", "unlock is only supported on TapTap"]);
+  result = null;
+  sdk.tapLeaderboardOpen("{}", (...args) => { result = args; });
+  assert.deepEqual(result, ["openLeaderboard", false, "", "openLeaderboard is only supported on TapTap"]);
+  result = null;
+  sdk.tapCloudSaveGetArchiveList((...args) => { result = args; });
+  assert.deepEqual(result, ["getArchiveList", false, "", "getArchiveList is only supported on TapTap"]);
+  result = null;
+  sdk.tapRequestPaymentGameItem(JSON.stringify({ signData: "x" }), (...args) => { result = args; });
+  assert.deepEqual(result, [false, -1, "requestPaymentGameItem is only supported on TapTap", ""]);
+  result = null;
+  sdk.tapCreateHomeScreenWidget((...args) => { result = args; });
+  assert.deepEqual(result, ["createHomeScreenWidget", false, "", "createHomeScreenWidget is only supported on TapTap"]);
+  result = null;
+  sdk.tapBattleCall("connect", "{}", (...args) => { result = args; });
+  assert.deepEqual(result, ["connect", false, "", "connect is only supported on TapTap"]);
+  // Battle emits a loud "error" event instead of silently registering.
+  const battleEvents = [];
+  sdk.tapBattleListen((event, json) => { battleEvents.push([event, json]); });
+  assert.equal(battleEvents.length, 1);
+  assert.equal(battleEvents[0][0], "error");
+  assert.match(JSON.parse(battleEvents[0][1]).error, /only supported on TapTap/);
+  assert.deepEqual(calls, [], "non-TapTap hosts must not receive TapTap-only calls");
+}
+
+await testTapAchievementWrappers();
+await testTapLeaderboardWrappers();
+await testTapCloudSaveWrappers();
+await testTapPaymentWrapper();
+await testTapWidgetWrappers();
+await testTapBattleWrappers();
+await testTapOnlyApisRejectOtherHosts();
+
 console.log("sdk_bridge.test.mjs: ok");

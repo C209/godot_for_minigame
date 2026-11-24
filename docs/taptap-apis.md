@@ -9,11 +9,13 @@
 
 | 组 | 方法数 | 状态 |
 |---|---|---|
-| 分享板 Shareboard | 5 | 已实现，待真机 |
-| 成就 Achievement | — | 未开始 |
-| 排行榜 Leaderboard | — | 未开始 |
-| 云存档 CloudSave | — | 未开始 |
-| 支付 / 对战 / 首页小组件 | — | 未开始 |
+| 分享板 Shareboard | 5 | 已实现，待真机（需先有已过审模板） |
+| 成就 Achievement | 7 | 已实现，自动化测试通过；真机待实际玩法触发 |
+| 排行榜 Leaderboard | 5 | 已实现，自动化测试通过；真机待实际玩法触发 |
+| 云存档 CloudSave | 6 | 已实现，自动化测试通过；真机待实际玩法触发 |
+| 道具直购 Payment | 1 | 已实现；需业务服务端签发参数，真机待接入 |
+| 桌面小组件 HomeWidget | 2 | 已实现，自动化测试通过；真机待接入 |
+| 对战 Battle | 4 | 已实现（通用分发），未验证；平台可能需开通 |
 
 ---
 
@@ -70,3 +72,136 @@
 | 非 iOS/Android 的桌面预览 | 所有调用回 `only supported on TapTap`，无异常 |
 
 验收通过后把 `support-matrix.json` 的 `android.shareboard` / `ios.shareboard` 由 `pending` 改为 `verified`。
+
+---
+
+## 2. 成就（Achievement）
+
+### 2.1 平台签名
+
+| 方法 | 入参 | 回调 | 确定性 |
+|---|---|---|---|
+| `tap.createAchievementManager(options)` | `{ toastEnable?: boolean }` | 无，返回 manager | 【产物】 |
+| `manager.toastEnable` | 布尔属性，可直接赋值 | — | 【产物】 |
+| `manager.unlockAchievement(options)` | `{ achievementId }` | **无回调** | 【产物】 |
+| `manager.incrementAchievement(options)` | `{ achievementId, steps }` | **无回调** | 【产物】 |
+| `manager.showAchievements()` | 无参 | 无 | 【产物】 |
+| `manager.registerListener(listener)` | `{ onAchievementSuccess(code, result), onAchievementFailure(id, code, msg) }` | 两个事件 | 【产物】 |
+| `manager.unregisterListener()` | 无参 | 无 | 【产物】 |
+
+### 2.2 本仓库映射
+
+`taptap_achievement_create(toast_enable)` / `_set_toast_enabled` / `_unlock` / `_increment` / `_show_all` / `_listen` / `_stop_listening` → `tap_achievement_result(operation, success, data_json, error)`，监听事件走 `tap_achievement_unlocked(code, result_json)` 与 `tap_achievement_failed(achievement_id, code, message)`。
+
+### 2.3 注意
+
+- `unlock` / `increment` 在平台上没有回调，所以 `tap_achievement_result` 的成功**只代表已派发**，真实结果只从监听事件来。
+- 监听器只需注册一次；重复 `taptap_achievement_listen()` 复用同一个持久回调。
+
+---
+
+## 3. 排行榜（Leaderboard）
+
+### 3.1 平台签名
+
+| 方法 | 入参 | 确定性 |
+|---|---|---|
+| `tap.getLeaderboardManager()` | 无，返回 manager | 【产物】 |
+| `manager.openLeaderboard(params)` | `{ leaderboardId, collection }` | 【产物】 |
+| `manager.submitScores(params)` | `{ scores: [{ leaderboardId, score }] }` | 【产物】 |
+| `manager.loadLeaderboardScores(params)` | `{ leaderboardId, collection, nextPage? }` | 【产物】 |
+| `manager.loadCurrentPlayerLeaderboardScore(params)` | `{ leaderboardId, collection, periodToken? }` | 【产物】 |
+| `manager.loadPlayerCenteredScores(params)` | `{ leaderboardId, collection, maxCount?, periodToken? }` | 【产物】 |
+
+**关键差异**：排行榜把回调嵌在 `params.callback = { onSuccess, onFailure(code, message) }`，不是顶层 `success/fail`。`collection` 例：`public` 总榜、`friends` 好友榜。
+
+### 3.2 本仓库映射
+
+`taptap_leaderboard_open` / `_submit_scores` / `_load_scores` / `_load_current_player_score` / `_load_player_centered_scores`，统一回 `tap_leaderboard_result(operation, success, data_json, error)`；`params` 原样透传。
+
+---
+
+## 4. 云存档（CloudSave）
+
+### 4.1 平台签名
+
+| 方法 | 入参 | 成功返回 | 确定性 |
+|---|---|---|---|
+| `tap.getCloudSaveManager()` | 无 | manager | 【产物】 |
+| `manager.createArchive(options)` | `{ archiveMetaData: { name, summary, extra, playtime }, archiveFilePath, archiveCoverPath? }` | `{ uuid, fileId }` | 【产物】 |
+| `manager.updateArchive(options)` | 同上 + `archiveUUID` | `{ uuid, fileId }` | 【产物】 |
+| `manager.getArchiveList(options)` | `{}` | `{ saves: [{ uuid, fileId, name, summary, saveSize, createdTime, modifiedTime, extra }] }`（时间戳为秒） | 【产物】 |
+| `manager.getArchiveData(options)` | `{ archiveUUID, archiveFileId, targetFilePath? }` | `{ filePath }` | 【产物】 |
+| `manager.getArchiveCover(options)` | 同上 | `{ filePath }` | 【产物】 |
+| `manager.deleteArchive(options)` | `{ archiveUUID }` | `{ uuid }` | 【产物】 |
+
+**关键差异**：云存档的失败回调是 `fail(errMsg, errno)` **两个位置参数**，不是对象；本仓库已按此解包成 `code=… errMsg`。
+
+限制（Unity 注释）：单个存档文件 ≤10MB，封面 ≤512KB。
+
+### 4.2 本仓库映射
+
+`taptap_cloudsave_create_archive(params)` / `_update_archive` / `_get_archive_list()` / `_get_archive_data(uuid, file_id?, target_path?)` / `_get_archive_cover(…)` / `_delete_archive(uuid)` → `tap_cloudsave_result(operation, success, data_json, error)`。
+
+---
+
+## 5. 道具直购（Payment）
+
+| 方法 | 入参 | 确定性 |
+|---|---|---|
+| `tap.requestPaymentGameItem(options)` | `{ signData, paySig, signature, success, fail, complete }` | 【产物】 |
+
+- 三个签名字段**全部由业务服务端下发**，客户端拼不出来；缺 `signData` 时本仓库在本地就拒绝，不会打到宿主。
+- success/fail 回 `{ errCode, errMsg }`；**发货必须在服务端的 goods-deliver notify 里完成**，客户端成功只代表支付动作走完。
+- 本仓库：`taptap_request_payment_game_item(params)` → `tap_payment_result(success, err_code, err_msg, data_json)`。
+
+---
+
+## 6. 桌面小组件（HomeScreenWidget）
+
+| 方法 | 入参 | 确定性 |
+|---|---|---|
+| `tap.createHomeScreenWidget(options)` | `{ success, fail, complete }` | 【产物】 |
+| `tap.hasHomeScreenWidgetAndPinned(options)` | 同上 | 【产物】 |
+
+本仓库：`taptap_create_home_screen_widget()` / `taptap_has_home_screen_widget_and_pinned()` → `tap_widget_result(operation, success, data_json, error)`。
+
+---
+
+## 7. 对战（OnlineBattle）
+
+### 7.1 平台签名
+
+`tap.getOnlineBattleManager()` 返回 manager，方法分四类：
+
+| 类别 | 方法 |
+|---|---|
+| 生命周期 | `initialize` / `connect` / `disconnect` / `finalize` / `destroy` |
+| 房间 | `createRoom` / `matchRoom` / `joinRoom` / `getRoomList` / `leaveRoom` / `kickRoomPlayer` |
+| 玩家与房间属性 | `updatePlayerCustomStatus` / `updatePlayerCustomProperties` / `updateRoomProperties` |
+| 帧同步与消息 | `startFrameSync` / `sendFrameInput` / `stopFrameSync` / `sendCustomMessage` |
+| 监听 | `registerListener(listener)` / `unregisterListener(listener)` |
+
+13 个事件：`onDisconnected`、`onBattleServiceError`、`onRoomPropertiesChanged`、`onPlayerCustomPropertiesChanged`、`onPlayerCustomStatusChanged`、`onFrameSyncStopped`、`onFrameReceived`、`onFrameSyncStarted`、`onPlayerOffline`、`onPlayerLeft`、`onPlayerEntered`、`onCustomMessageReceived`、`onPlayerKicked`。
+
+### 7.2 本仓库映射
+
+对战方法的 option 形状逐个不同（例如 `sendFrameInput` 要 `{ data: "<字符串>" }`，`updatePlayerCustomProperties` 要 `{ properties: "<字符串>" }`），因此用**通用分发**而不是 25 个 typed 方法：
+
+- `taptap_battle_create_manager()` → `tap_battle_result("createManager", …)`
+- `taptap_battle_call(operation, params)` → `tap_battle_result(operation, …)`；`finalize` / `destroy` 无参数无回调，立即回成功
+- `taptap_battle_listen()` → `tap_battle_event(event_name, data_json)`（13 个事件合并到一条信号）
+- `taptap_battle_stop_listening()`
+
+### 7.3 未验证项
+
+- 平台是否要求开通/白名单未知；
+- `connect` 返回的 `playerId` 是后续房间与帧同步的前提，必须先拿到；
+- 帧同步的确定性 RNG（Unity 里的 `newRandomNumberGenerator` / `randomInt`）**未封装**——Godot 侧应使用自己的 `RandomNumberGenerator`，只有需要与其它端逐帧一致时才需要平台 RNG。
+
+---
+
+## 8. 后续触发测试的时机
+
+这批接口不做专项真机轮次，按「实际玩法用到哪组就验哪组」推进。每组的验收判据在该组章节；新增一条通用要求：**任何 `tap_*_result` 的 `error` 非空时，必须能定位到宿主 errMsg 或 `only supported on TapTap`，不允许出现「成功但无效果」。**
+

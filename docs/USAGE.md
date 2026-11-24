@@ -458,7 +458,7 @@ The plugin registers `MiniGameSDK` as an autoload. In non-mini-game environments
 
 Async calls deliver results via **signals** — no `await`. Sync calls (`storage_*`, `vibrate_*`) return immediately.
 
-The 235 public methods and 88 signals are the complete bridge surface, not a
+The 260 public methods and 97 signals are the complete bridge surface, not a
 blanket four-platform compatibility claim. Same-name APIs are dispatched to
 `wx`, `tt`, `TTMinis.game`, or `tap` only when the selected host exposes the
 required capability. Payments and other platform-specific flows use explicit
@@ -1452,6 +1452,50 @@ MiniGameSDK.taptap_off_share_message()
 ```
 
 Calls on other hosts are never silent: `tap_shareboard_result` reports `success=false` with `... is only supported on TapTap`, and a missing host method yields `tap.<method> is not supported`. Per-method signatures and real-device criteria live in [taptap-apis.md](taptap-apis.md).
+
+### TapTap achievement / leaderboard / cloud save / payment / widget / battle
+
+These capabilities only exist on TapTap and are all bridged; per-method signatures and real-device criteria live in [taptap-apis.md](taptap-apis.md).
+
+```gdscript
+# Achievement: create the manager, then subscribe to unlock results
+MiniGameSDK.taptap_achievement_create(true)
+MiniGameSDK.tap_achievement_unlocked.connect(
+    func(code: String, result_json: String) -> void:
+        print("achievement unlocked: ", code))
+MiniGameSDK.taptap_achievement_listen()
+MiniGameSDK.taptap_achievement_unlock("first_clear")
+
+# Leaderboard: params are passed through in the platform shape
+MiniGameSDK.tap_leaderboard_result.connect(
+    func(operation: String, ok: bool, data: String, error: String) -> void:
+        print(operation, " ok=", ok, " data=", data, " err=", error))
+MiniGameSDK.taptap_leaderboard_submit_scores(
+    {"scores": [{"leaderboardId": "weekly", "score": 1200}]})
+
+# Cloud save: one archive is <=10MB, its cover <=512KB
+MiniGameSDK.taptap_cloudsave_create_archive({
+    "archiveMetaData": {"name": "slot1", "summary": "Level 3", "extra": "", "playtime": 120},
+    "archiveFilePath": "user://save.dat",
+})
+
+# Game-item payment: signData / paySig / signature come from your server
+MiniGameSDK.taptap_request_payment_game_item(
+    {"signData": sign_data, "paySig": pay_sig, "signature": user_sig})
+
+# Home-screen widget
+MiniGameSDK.taptap_has_home_screen_widget_and_pinned()
+
+# Online battle: one dispatcher plus merged events
+MiniGameSDK.taptap_battle_create_manager()
+MiniGameSDK.tap_battle_event.connect(
+    func(event_name: String, data_json: String) -> void:
+        print("battle event: ", event_name))
+MiniGameSDK.taptap_battle_listen()
+MiniGameSDK.taptap_battle_call("connect")
+```
+
+On other hosts every call reports `... is only supported on TapTap`. For calls whose platform method has no callback (`taptap_achievement_unlock`, `taptap_achievement_increment`, `taptap_battle_call`), `success=true` only means **dispatched to the host** — the real outcome arrives through the event signals.
 
 ### Compatibility, system info, and safe area
 

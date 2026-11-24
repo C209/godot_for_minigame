@@ -356,6 +356,21 @@ function _sha256Tail(bytes, offset) {
   return tail;
 }
 
+const TAPTAP_BATTLE_OPS = new Set([
+  "initialize", "connect", "disconnect", "finalize", "destroy", "createRoom",
+  "matchRoom", "joinRoom", "getRoomList", "leaveRoom", "kickRoomPlayer",
+  "updatePlayerCustomStatus", "updatePlayerCustomProperties", "updateRoomProperties",
+  "startFrameSync", "sendFrameInput", "stopFrameSync", "sendCustomMessage",
+]);
+
+const TAPTAP_BATTLE_EVENTS = [
+  "onDisconnected", "onBattleServiceError", "onRoomPropertiesChanged",
+  "onPlayerCustomPropertiesChanged", "onPlayerCustomStatusChanged",
+  "onFrameSyncStopped", "onFrameReceived", "onFrameSyncStarted",
+  "onPlayerOffline", "onPlayerLeft", "onPlayerEntered",
+  "onCustomMessageReceived", "onPlayerKicked",
+];
+
 class GodotSDK {
 
   constructor() {
@@ -1309,6 +1324,475 @@ class GodotSDK {
       _api.offShareMessage();
     } catch (e) {
       console.warn("[SDK] offShareMessage:", _fmtErr(e));
+    }
+  }
+
+  // ── TapTap Open Capabilities ────────────────────────────────────
+  //
+  // Achievement / Leaderboard / CloudSave / Payment / HomeScreenWidget /
+  // Battle are TapTap-only. Managers are created lazily and cached per SDK
+  // instance; every entry point fails loudly on other hosts.
+
+  _taptapSupported(action, callback) {
+    if (PlatformRuntime.platform === "taptap") return true;
+    callback(action, false, "", `${action} is only supported on TapTap`);
+    return false;
+  }
+
+  _taptapManager(kind) {
+    if (!this._tapManagers) this._tapManagers = {};
+    return this._tapManagers[kind] || null;
+  }
+
+  _taptapSetManager(kind, manager) {
+    if (!this._tapManagers) this._tapManagers = {};
+    this._tapManagers[kind] = manager;
+    return manager;
+  }
+
+  _taptapAchievementManager(toastEnable) {
+    let manager = this._taptapManager("achievement");
+    if (manager) {
+      if (toastEnable !== undefined) {
+        try { manager.toastEnable = !!toastEnable; } catch (_) {}
+      }
+      return manager;
+    }
+    if (typeof _api.createAchievementManager !== "function") return null;
+    manager = _api.createAchievementManager(
+      toastEnable === undefined ? {} : { toastEnable: !!toastEnable });
+    return this._taptapSetManager("achievement", manager);
+  }
+
+  /** Shared wrapper for the synchronous achievement calls: the manager method
+   * has no callback, so success only means "dispatched to the platform". */
+  _taptapAchievementOp(action, run, callback) {
+    if (!this._taptapSupported(action, callback)) return;
+    const manager = this._taptapAchievementManager();
+    if (!manager) {
+      callback(action, false, "", _unsupported("createAchievementManager"));
+      return;
+    }
+    try {
+      run(manager);
+      callback(action, true, "{}", "");
+    } catch (e) {
+      callback(action, false, "", _fmtErr(e));
+    }
+  }
+
+  tapAchievementCreate(toastEnable, callback) {
+    if (!this._taptapSupported("create", callback)) return;
+    const manager = this._taptapAchievementManager(!!toastEnable);
+    if (!manager) {
+      callback("create", false, "", _unsupported("createAchievementManager"));
+      return;
+    }
+    callback("create", true, "{}", "");
+  }
+
+  tapAchievementSetToastEnabled(enabled, callback) {
+    this._taptapAchievementOp("setToastEnabled", (manager) => {
+      manager.toastEnable = !!enabled;
+    }, callback);
+  }
+
+  tapAchievementUnlock(achievementId, callback) {
+    this._taptapAchievementOp("unlock", (manager) => {
+      if (typeof manager.unlockAchievement !== "function") {
+        throw new Error(_unsupported("unlockAchievement"));
+      }
+      manager.unlockAchievement({ achievementId: String(achievementId || "") });
+    }, callback);
+  }
+
+  tapAchievementIncrement(achievementId, steps, callback) {
+    this._taptapAchievementOp("increment", (manager) => {
+      if (typeof manager.incrementAchievement !== "function") {
+        throw new Error(_unsupported("incrementAchievement"));
+      }
+      manager.incrementAchievement({
+        achievementId: String(achievementId || ""),
+        steps: _num(steps),
+      });
+    }, callback);
+  }
+
+  tapAchievementShowAll(callback) {
+    this._taptapAchievementOp("showAll", (manager) => {
+      if (typeof manager.showAchievements !== "function") {
+        throw new Error(_unsupported("showAchievements"));
+      }
+      manager.showAchievements();
+    }, callback);
+  }
+
+  /** The listener has two event shapes; they are merged into one callback:
+   * ("unlocked", code, code, "", resultJson)
+   * ("failed", id, code, message, "") */
+  tapAchievementListen(callback) {
+    if (!this._taptapSupported("listen", (action, ok, data, error) => {
+      callback("error", "", "", error, "");
+    })) return;
+    const manager = this._taptapAchievementManager();
+    if (!manager) {
+      callback("error", "", "", _unsupported("createAchievementManager"), "");
+      return;
+    }
+    if (typeof manager.registerListener !== "function") {
+      callback("error", "", "", _unsupported("registerListener"), "");
+      return;
+    }
+    this._tapAchievementListener = {
+      onAchievementSuccess: (code, result) => {
+        callback("unlocked", String(code || ""), String(code || ""), "", _jsonSafe(result || {}));
+      },
+      onAchievementFailure: (id, code, message) => {
+        callback("failed", String(id || ""), String(code || ""), String(message || ""), "");
+      },
+    };
+    try {
+      manager.registerListener(this._tapAchievementListener);
+    } catch (e) {
+      this._tapAchievementListener = null;
+      callback("error", "", "", _fmtErr(e), "");
+    }
+  }
+
+  tapAchievementStopListening() {
+    const manager = this._taptapManager("achievement");
+    if (this._tapAchievementListener) this._tapAchievementListener = null;
+    if (!manager || typeof manager.unregisterListener !== "function") return;
+    try {
+      manager.unregisterListener();
+    } catch (e) {
+      console.warn("[SDK] achievement unregisterListener:", _fmtErr(e));
+    }
+  }
+
+  /** Leaderboard callbacks are nested (`callback.onSuccess/onFailure`). */
+  _taptapLeaderboardCall(action, methodName, paramsJson, callback) {
+    if (!this._taptapSupported(action, callback)) return;
+    let manager = this._taptapManager("leaderboard");
+    if (!manager) {
+      if (typeof _api.getLeaderboardManager !== "function") {
+        callback(action, false, "", _unsupported("getLeaderboardManager"));
+        return;
+      }
+      manager = this._taptapSetManager("leaderboard", _api.getLeaderboardManager());
+    }
+    if (typeof manager[methodName] !== "function") {
+      callback(action, false, "", `leaderboard.${methodName} is not supported`);
+      return;
+    }
+
+    let settled = false;
+    const finish = (ok, data, error) => {
+      if (settled) return;
+      settled = true;
+      callback(action, !!ok, ok ? _jsonSafe(data || {}) : "", ok ? "" : _fmtErr(error));
+    };
+
+    const params = _jsonObject(paramsJson);
+    params.callback = {
+      onSuccess: (res) => finish(true, res || {}),
+      onFailure: (code, message) => finish(false, null, { errCode: code, errMsg: message }),
+    };
+    try {
+      const result = manager[methodName](params);
+      if (result && typeof result.then === "function") {
+        result.then((res) => finish(true, res || {})).catch((error) => finish(false, null, error));
+      }
+    } catch (e) {
+      finish(false, null, e);
+    }
+  }
+
+  tapLeaderboardOpen(paramsJson, callback) {
+    this._taptapLeaderboardCall("openLeaderboard", "openLeaderboard", paramsJson, callback);
+  }
+
+  tapLeaderboardSubmitScores(paramsJson, callback) {
+    this._taptapLeaderboardCall("submitScores", "submitScores", paramsJson, callback);
+  }
+
+  tapLeaderboardLoadScores(paramsJson, callback) {
+    this._taptapLeaderboardCall(
+      "loadLeaderboardScores", "loadLeaderboardScores", paramsJson, callback);
+  }
+
+  tapLeaderboardLoadCurrentPlayerScore(paramsJson, callback) {
+    this._taptapLeaderboardCall(
+      "loadCurrentPlayerLeaderboardScore", "loadCurrentPlayerLeaderboardScore",
+      paramsJson, callback,
+    );
+  }
+
+  tapLeaderboardLoadPlayerCenteredScores(paramsJson, callback) {
+    this._taptapLeaderboardCall(
+      "loadPlayerCenteredScores", "loadPlayerCenteredScores", paramsJson, callback);
+  }
+
+  /** CloudSave reports failures as fail(errMsg, errno) — two positional args. */
+  _taptapCloudSaveCall(action, methodName, options, callback) {
+    if (!this._taptapSupported(action, callback)) return;
+    let manager = this._taptapManager("cloudSave");
+    if (!manager) {
+      if (typeof _api.getCloudSaveManager !== "function") {
+        callback(action, false, "", _unsupported("getCloudSaveManager"));
+        return;
+      }
+      manager = this._taptapSetManager("cloudSave", _api.getCloudSaveManager());
+    }
+    if (typeof manager[methodName] !== "function") {
+      callback(action, false, "", `cloudSave.${methodName} is not supported`);
+      return;
+    }
+
+    let settled = false;
+    const finish = (ok, data, error) => {
+      if (settled) return;
+      settled = true;
+      callback(action, !!ok, ok ? _jsonSafe(data || {}) : "", ok ? "" : _fmtErr(error));
+    };
+
+    const params = Object.assign({}, options || {});
+    params.success = (res) => finish(true, res || {});
+    params.fail = (errMsg, errno) => finish(
+      false, null, { errCode: errno == null ? -1 : errno, errMsg: errMsg || `${methodName} failed` });
+    params.complete = () => {};
+    try {
+      const result = manager[methodName](params);
+      if (result && typeof result.then === "function") {
+        result.then((res) => finish(true, res || {})).catch((error) => finish(false, null, error));
+      }
+    } catch (e) {
+      finish(false, null, e);
+    }
+  }
+
+  tapCloudSaveCreateArchive(paramsJson, callback) {
+    this._taptapCloudSaveCall("createArchive", "createArchive", _jsonObject(paramsJson), callback);
+  }
+
+  tapCloudSaveUpdateArchive(paramsJson, callback) {
+    this._taptapCloudSaveCall("updateArchive", "updateArchive", _jsonObject(paramsJson), callback);
+  }
+
+  tapCloudSaveGetArchiveList(callback) {
+    this._taptapCloudSaveCall("getArchiveList", "getArchiveList", {}, callback);
+  }
+
+  tapCloudSaveGetArchiveData(paramsJson, callback) {
+    this._taptapCloudSaveCall("getArchiveData", "getArchiveData", _jsonObject(paramsJson), callback);
+  }
+
+  tapCloudSaveGetArchiveCover(paramsJson, callback) {
+    this._taptapCloudSaveCall("getArchiveCover", "getArchiveCover", _jsonObject(paramsJson), callback);
+  }
+
+  tapCloudSaveDeleteArchive(paramsJson, callback) {
+    this._taptapCloudSaveCall("deleteArchive", "deleteArchive", _jsonObject(paramsJson), callback);
+  }
+
+  /** signData / paySig / signature must come from the game server. */
+  tapRequestPaymentGameItem(paramsJson, callback) {
+    if (PlatformRuntime.platform !== "taptap") {
+      callback(false, -1, "requestPaymentGameItem is only supported on TapTap", "");
+      return;
+    }
+    const method = _api.requestPaymentGameItem;
+    if (typeof method !== "function") {
+      callback(false, -1, _unsupported("requestPaymentGameItem"), "");
+      return;
+    }
+    const params = _jsonObject(paramsJson);
+    if (!params.signData) {
+      callback(false, -1, "requestPaymentGameItem requires signData from your server", "");
+      return;
+    }
+
+    let settled = false;
+    const finish = (ok, res) => {
+      if (settled) return;
+      settled = true;
+      const payload = (res && typeof res === "object") ? res : {};
+      const code = Number(payload.errCode == null ? (ok ? 0 : -1) : payload.errCode);
+      const message = payload.errMsg == null
+        ? (ok ? "" : "requestPaymentGameItem failed")
+        : String(payload.errMsg);
+      callback(!!ok, isFinite(code) ? code : (ok ? 0 : -1), message, ok ? _jsonSafe(payload) : "");
+    };
+
+    try {
+      const result = method.call(_api, {
+        ...params,
+        success: (res) => finish(true, res),
+        fail: (res) => finish(false, res),
+        complete: (res) => {
+          if (!settled && res && typeof res.errMsg === "string" && res.errMsg.includes(":fail")) {
+            finish(false, res);
+          }
+        },
+      });
+      if (result && typeof result.then === "function") {
+        result.then((res) => finish(true, res)).catch((error) => finish(false, error));
+      }
+    } catch (e) {
+      callback(false, -1, _fmtErr(e), "");
+    }
+  }
+
+  _taptapWidgetCall(action, methodName, callback) {
+    if (!this._taptapSupported(action, callback)) return;
+    const method = _api[methodName];
+    if (typeof method !== "function") {
+      callback(action, false, "", _unsupported(methodName));
+      return;
+    }
+    let settled = false;
+    const finish = (ok, data, error) => {
+      if (settled) return;
+      settled = true;
+      callback(action, !!ok, ok ? _jsonSafe(data || {}) : "", ok ? "" : _fmtErr(error));
+    };
+    try {
+      method.call(_api, {
+        success: (res) => finish(true, res || {}),
+        fail: (error) => finish(false, null, error),
+        complete: (res) => {
+          if (!settled && res && typeof res.errMsg === "string" && res.errMsg.includes(":fail")) {
+            finish(false, null, res);
+          }
+        },
+      });
+    } catch (e) {
+      finish(false, null, e);
+    }
+  }
+
+  tapCreateHomeScreenWidget(callback) {
+    this._taptapWidgetCall("createHomeScreenWidget", "createHomeScreenWidget", callback);
+  }
+
+  tapHasHomeScreenWidgetAndPinned(callback) {
+    this._taptapWidgetCall(
+      "hasHomeScreenWidgetAndPinned", "hasHomeScreenWidgetAndPinned", callback);
+  }
+
+  _taptapBattleManager() {
+    let manager = this._tapBattleManager || null;
+    if (manager) return manager;
+    if (typeof _api.getOnlineBattleManager !== "function") return null;
+    try {
+      manager = _api.getOnlineBattleManager();
+    } catch (_) {
+      return null;
+    }
+    this._tapBattleManager = manager;
+    return manager;
+  }
+
+  tapBattleCreateManager(callback) {
+    if (!this._taptapSupported("createManager", callback)) return;
+    const manager = this._taptapBattleManager();
+    if (!manager) {
+      callback("createManager", false, "", _unsupported("getOnlineBattleManager"));
+      return;
+    }
+    callback("createManager", true, "{}", "");
+  }
+
+  /** Generic dispatcher: the battle manager exposes ~20 methods whose option
+   * shapes differ per call, so params are passed through to the platform. */
+  tapBattleCall(operation, paramsJson, callback) {
+    const action = String(operation || "");
+    if (!this._taptapSupported(action, callback)) return;
+    if (!TAPTAP_BATTLE_OPS.has(action)) {
+      callback(action, false, "", `battle operation "${action}" is not supported`);
+      return;
+    }
+    const manager = this._taptapBattleManager();
+    if (!manager) {
+      callback(action, false, "", _unsupported("getOnlineBattleManager"));
+      return;
+    }
+    if (typeof manager[action] !== "function") {
+      callback(action, false, "", `battle.${action} is not supported`);
+      return;
+    }
+    // finalize / destroy take no options and fire no callbacks.
+    if (action === "finalize" || action === "destroy") {
+      try {
+        manager[action]();
+        callback(action, true, "{}", "");
+      } catch (e) {
+        callback(action, false, "", _fmtErr(e));
+      }
+      return;
+    }
+
+    let settled = false;
+    const finish = (ok, data, error) => {
+      if (settled) return;
+      settled = true;
+      callback(action, !!ok, ok ? _jsonSafe(data || {}) : "", ok ? "" : _fmtErr(error));
+    };
+
+    try {
+      const result = manager[action]({
+        ..._jsonObject(paramsJson),
+        success: (res) => finish(true, res || {}),
+        fail: (error) => finish(false, null, error),
+        complete: (res) => {
+          if (!settled && res && typeof res.errMsg === "string" && res.errMsg.includes(":fail")) {
+            finish(false, null, res);
+          }
+        },
+      });
+      if (result && typeof result.then === "function") {
+        result.then((res) => finish(true, res || {})).catch((error) => finish(false, null, error));
+      }
+    } catch (e) {
+      finish(false, null, e);
+    }
+  }
+
+  tapBattleListen(callback) {
+    if (!this._taptapSupported("listen", (action, ok, data, error) => {
+      callback("error", _jsonSafe({ error: error || "listen failed" }));
+    })) return;
+    const manager = this._taptapBattleManager();
+    if (!manager) {
+      callback("error", _jsonSafe({ error: _unsupported("getOnlineBattleManager") }));
+      return;
+    }
+    if (typeof manager.registerListener !== "function") {
+      callback("error", _jsonSafe({ error: _unsupported("registerListener") }));
+      return;
+    }
+    const listener = {};
+    for (const name of TAPTAP_BATTLE_EVENTS) {
+      listener[name] = (info) => callback(name, _jsonSafe(info || {}));
+    }
+    this._tapBattleListener = listener;
+    try {
+      manager.registerListener(listener);
+    } catch (e) {
+      this._tapBattleListener = null;
+      callback("error", _jsonSafe({ error: _fmtErr(e) }));
+    }
+  }
+
+  tapBattleStopListening() {
+    const manager = this._taptapBattleManager();
+    const listener = this._tapBattleListener;
+    this._tapBattleListener = null;
+    if (!manager || !listener || typeof manager.unregisterListener !== "function") return;
+    try {
+      manager.unregisterListener(listener);
+    } catch (e) {
+      console.warn("[SDK] battle unregisterListener:", _fmtErr(e));
     }
   }
 

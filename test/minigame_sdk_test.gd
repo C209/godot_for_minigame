@@ -161,6 +161,15 @@ func _init() -> void:
 		"modal_result": [],
 		"tap_shareboard": [],
 		"tap_share_message": [],
+		"tap_achievement_result": [],
+		"tap_achievement_unlocked": [],
+		"tap_achievement_failed": [],
+		"tap_leaderboard": [],
+		"tap_cloudsave": [],
+		"tap_payment": [],
+		"tap_widget": [],
+		"tap_battle_result": [],
+		"tap_battle_event": [],
 	}
 	sdk.generic_api_result.connect(func(api_name: String, success: bool, data_json: String, error: String) -> void:
 		holder["generic"] = [api_name, success, data_json, error]
@@ -377,6 +386,33 @@ func _init() -> void:
 	)
 	sdk.tap_share_message.connect(func(channel: String, err_msg: String, data_json: String) -> void:
 		holder["tap_share_message"] = [channel, err_msg, data_json]
+	)
+	sdk.tap_achievement_result.connect(func(operation: String, success: bool, data_json: String, error: String) -> void:
+		holder["tap_achievement_result"] = [operation, success, data_json, error]
+	)
+	sdk.tap_achievement_unlocked.connect(func(code: String, result_json: String) -> void:
+		holder["tap_achievement_unlocked"] = [code, result_json]
+	)
+	sdk.tap_achievement_failed.connect(func(achievement_id: String, code: String, message: String) -> void:
+		holder["tap_achievement_failed"] = [achievement_id, code, message]
+	)
+	sdk.tap_leaderboard_result.connect(func(operation: String, success: bool, data_json: String, error: String) -> void:
+		holder["tap_leaderboard"] = [operation, success, data_json, error]
+	)
+	sdk.tap_cloudsave_result.connect(func(operation: String, success: bool, data_json: String, error: String) -> void:
+		holder["tap_cloudsave"] = [operation, success, data_json, error]
+	)
+	sdk.tap_payment_result.connect(func(success: bool, err_code: int, err_msg: String, data_json: String) -> void:
+		holder["tap_payment"] = [success, err_code, err_msg, data_json]
+	)
+	sdk.tap_widget_result.connect(func(operation: String, success: bool, data_json: String, error: String) -> void:
+		holder["tap_widget"] = [operation, success, data_json, error]
+	)
+	sdk.tap_battle_result.connect(func(operation: String, success: bool, data_json: String, error: String) -> void:
+		holder["tap_battle_result"] = [operation, success, data_json, error]
+	)
+	sdk.tap_battle_event.connect(func(event_name: String, data_json: String) -> void:
+		holder["tap_battle_event"] = [event_name, data_json]
 	)
 
 	sdk.show_modal("Confirm", "Continue?")
@@ -781,6 +817,33 @@ func _init() -> void:
 	_assert_eq(holder["tap_shareboard"], ["showShareboard", true, "{\"errMsg\":\"ok\"}", ""], "tap shareboard callback conversion")
 	sdk._on_tap_share_message(["tapTap", "", "{\"channel\":\"tapTap\"}"])
 	_assert_eq(holder["tap_share_message"], ["tapTap", "", "{\"channel\":\"tapTap\"}"], "tap share message callback conversion")
+
+	sdk.taptap_achievement_create(false)
+	_assert_eq(holder["tap_achievement_result"], ["create", false, "", MiniGameSDKScript.NOT_IN_RUNTIME], "taptap_achievement_create fallback")
+	sdk.taptap_achievement_unlock("ach_1")
+	_assert_eq(holder["tap_achievement_result"], ["unlock", false, "", MiniGameSDKScript.NOT_IN_RUNTIME], "taptap_achievement_unlock fallback")
+	sdk.taptap_leaderboard_submit_scores({"leaderboardId": "lb"})
+	_assert_eq(holder["tap_leaderboard"], ["submitScores", false, "", MiniGameSDKScript.NOT_IN_RUNTIME], "taptap_leaderboard fallback")
+	sdk.taptap_cloudsave_delete_archive("uuid")
+	_assert_eq(holder["tap_cloudsave"], ["deleteArchive", false, "", MiniGameSDKScript.NOT_IN_RUNTIME], "taptap_cloudsave fallback")
+	sdk.taptap_request_payment_game_item({"signData": "{}"})
+	_assert_eq(holder["tap_payment"], [false, -1, MiniGameSDKScript.NOT_IN_RUNTIME, ""], "taptap payment fallback")
+	sdk.taptap_has_home_screen_widget_and_pinned()
+	_assert_eq(holder["tap_widget"], ["hasHomeScreenWidgetAndPinned", false, "", MiniGameSDKScript.NOT_IN_RUNTIME], "taptap widget fallback")
+	sdk.taptap_battle_call("connect")
+	_assert_eq(holder["tap_battle_result"], ["connect", false, "", MiniGameSDKScript.NOT_IN_RUNTIME], "taptap battle fallback")
+	sdk.taptap_achievement_listen()
+	sdk.taptap_battle_listen()
+	_assert_eq(holder["tap_battle_event"], [], "tap listeners stay silent outside a runtime")
+
+	sdk._on_tap_achievement_event(["unlocked", "ach_1", "ach_1", "", "{\"ok\":1}"])
+	_assert_eq(holder["tap_achievement_unlocked"], ["ach_1", "{\"ok\":1}"], "achievement unlock conversion")
+	sdk._on_tap_achievement_event(["failed", "ach_2", "500", "boom", ""])
+	_assert_eq(holder["tap_achievement_failed"], ["ach_2", "500", "boom"], "achievement failure conversion")
+	sdk._on_tap_payment([true, "0", "ok", "{\"errCode\":0}"])
+	_assert_eq(holder["tap_payment"], [true, 0, "ok", "{\"errCode\":0}"], "payment conversion")
+	sdk._on_tap_battle_event(["onFrameReceived", "{\"frameId\":7}"])
+	_assert_eq(holder["tap_battle_event"], ["onFrameReceived", "{\"frameId\":7}"], "battle event conversion")
 
 	sdk._on_accelerometer_changed([1, "2", -3.0, "{\"x\":1,\"y\":2,\"z\":-3}"])
 	_assert_eq(holder["accelerometer"], [1.0, 2.0, -3.0, "{\"x\":1,\"y\":2,\"z\":-3}"], "accelerometer callback conversion")

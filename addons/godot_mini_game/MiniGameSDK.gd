@@ -46,6 +46,31 @@ signal tap_shareboard_result(operation: String, success: bool, data_json: String
 ## host error message when the share failed.
 signal tap_share_message(channel: String, err_msg: String, data_json: String)
 
+## Reports the outcome of a TapTap achievement call. `unlock` / `increment` only
+## confirm the call was dispatched; the real result arrives through
+## [signal tap_achievement_unlocked] / [signal tap_achievement_failed].
+signal tap_achievement_result(operation: String, success: bool, data_json: String, error: String)
+signal tap_achievement_unlocked(code: String, result_json: String)
+signal tap_achievement_failed(achievement_id: String, code: String, message: String)
+
+## Reports the outcome of a TapTap leaderboard call.
+signal tap_leaderboard_result(operation: String, success: bool, data_json: String, error: String)
+
+## Reports the outcome of a TapTap cloud-save call.
+signal tap_cloudsave_result(operation: String, success: bool, data_json: String, error: String)
+
+## Reports a TapTap game-item payment. The item must still be delivered by your
+## server's goods-deliver notify handler; this only covers the client step.
+signal tap_payment_result(success: bool, err_code: int, err_msg: String, data_json: String)
+
+## Reports a TapTap home-screen widget call.
+signal tap_widget_result(operation: String, success: bool, data_json: String, error: String)
+
+## Reports the outcome of a TapTap online-battle call.
+signal tap_battle_result(operation: String, success: bool, data_json: String, error: String)
+## Reports a TapTap online-battle event; the payload is the raw platform info.
+signal tap_battle_event(event_name: String, data_json: String)
+
 signal keyboard_event(event_type: String, value: String)
 
 signal http_response(status_code: int, data: String, error: String)
@@ -877,6 +902,333 @@ func _on_tap_share_message(args: Array) -> void:
 		_s(args[0]) if args.size() > 0 else "",
 		_s(args[1]) if args.size() > 1 else "",
 		_s(args[2]) if args.size() > 2 else "")
+
+
+# ── TapTap Achievement ────────────────────────────────────────────
+
+## TapTap only. Creates (and caches) the achievement manager. `toast_enable`
+## keeps the platform toast shown on unlock.
+func taptap_achievement_create(toast_enable: bool = true) -> void:
+	if not _sdk:
+		tap_achievement_result.emit("create", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapAchievementCreate(
+		toast_enable, _track_oneshot(_on_tap_achievement_op.bind("create")))
+
+
+## TapTap only. Turns the unlock toast on or off.
+func taptap_achievement_set_toast_enabled(enabled: bool) -> void:
+	if not _sdk:
+		tap_achievement_result.emit("setToastEnabled", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapAchievementSetToastEnabled(
+		enabled, _track_oneshot(_on_tap_achievement_op.bind("setToastEnabled")))
+
+
+## TapTap only. Achievement ids are configured in the developer console.
+## The result only confirms the call was dispatched.
+func taptap_achievement_unlock(achievement_id: String) -> void:
+	if not _sdk:
+		tap_achievement_result.emit("unlock", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapAchievementUnlock(
+		achievement_id, _track_oneshot(_on_tap_achievement_op.bind("unlock")))
+
+
+## TapTap only. Adds `steps` to a step-based achievement.
+func taptap_achievement_increment(achievement_id: String, steps: int = 1) -> void:
+	if not _sdk:
+		tap_achievement_result.emit("increment", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapAchievementIncrement(
+		achievement_id, steps, _track_oneshot(_on_tap_achievement_op.bind("increment")))
+
+
+## TapTap only. Opens the platform achievement list.
+func taptap_achievement_show_all() -> void:
+	if not _sdk:
+		tap_achievement_result.emit("showAll", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapAchievementShowAll(_track_oneshot(_on_tap_achievement_op.bind("showAll")))
+
+
+## TapTap only. Subscribes to unlock results.
+func taptap_achievement_listen() -> void:
+	if not _sdk:
+		return
+	_sdk.tapAchievementListen(_track_persistent(_on_tap_achievement_event))
+
+
+## TapTap only. Removes the listener registered by taptap_achievement_listen().
+func taptap_achievement_stop_listening() -> void:
+	if _sdk:
+		_sdk.tapAchievementStopListening()
+
+
+func _on_tap_achievement_op(args: Array, operation: String) -> void:
+	tap_achievement_result.emit(
+		operation,
+		_b(args[1]) if args.size() > 1 else false,
+		_s(args[2]) if args.size() > 2 else "",
+		_s(args[3]) if args.size() > 3 else "")
+
+
+func _on_tap_achievement_event(args: Array) -> void:
+	var event := _s(args[0]) if args.size() > 0 else ""
+	if event == "unlocked":
+		tap_achievement_unlocked.emit(
+			_s(args[1]) if args.size() > 1 else "",
+			_s(args[4]) if args.size() > 4 else "")
+		return
+	tap_achievement_failed.emit(
+		_s(args[1]) if args.size() > 1 else "",
+		_s(args[2]) if args.size() > 2 else "",
+		_s(args[3]) if args.size() > 3 else "")
+
+
+# ── TapTap Leaderboard ────────────────────────────────────────────
+
+## TapTap only. Opens a leaderboard. `params` uses the platform shape, e.g.
+## {"leaderboardId": "...", "leaderboardType": "..."}.
+func taptap_leaderboard_open(params: Dictionary = {}) -> void:
+	if not _sdk:
+		tap_leaderboard_result.emit("openLeaderboard", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapLeaderboardOpen(
+		JSON.stringify(params), _track_oneshot(_on_tap_leaderboard.bind("openLeaderboard")))
+
+
+## TapTap only. Submits one or more scores.
+func taptap_leaderboard_submit_scores(params: Dictionary = {}) -> void:
+	if not _sdk:
+		tap_leaderboard_result.emit("submitScores", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapLeaderboardSubmitScores(
+		JSON.stringify(params), _track_oneshot(_on_tap_leaderboard.bind("submitScores")))
+
+
+## TapTap only. Loads scores around the top of the leaderboard.
+func taptap_leaderboard_load_scores(params: Dictionary = {}) -> void:
+	if not _sdk:
+		tap_leaderboard_result.emit("loadLeaderboardScores", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapLeaderboardLoadScores(
+		JSON.stringify(params),
+		_track_oneshot(_on_tap_leaderboard.bind("loadLeaderboardScores")))
+
+
+## TapTap only. Loads the current player's own score.
+func taptap_leaderboard_load_current_player_score(params: Dictionary = {}) -> void:
+	if not _sdk:
+		tap_leaderboard_result.emit("loadCurrentPlayerLeaderboardScore", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapLeaderboardLoadCurrentPlayerScore(
+		JSON.stringify(params),
+		_track_oneshot(_on_tap_leaderboard.bind("loadCurrentPlayerLeaderboardScore")))
+
+
+## TapTap only. Loads scores centered on the current player.
+func taptap_leaderboard_load_player_centered_scores(params: Dictionary = {}) -> void:
+	if not _sdk:
+		tap_leaderboard_result.emit("loadPlayerCenteredScores", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapLeaderboardLoadPlayerCenteredScores(
+		JSON.stringify(params),
+		_track_oneshot(_on_tap_leaderboard.bind("loadPlayerCenteredScores")))
+
+
+func _on_tap_leaderboard(args: Array, operation: String) -> void:
+	tap_leaderboard_result.emit(
+		operation,
+		_b(args[1]) if args.size() > 1 else false,
+		_s(args[2]) if args.size() > 2 else "",
+		_s(args[3]) if args.size() > 3 else "")
+
+
+# ── TapTap Cloud Save ─────────────────────────────────────────────
+
+## TapTap only. Creates a cloud archive. `params` follows the platform shape:
+## {"archiveMetaData": {"name", "summary", "extra", "playtime"},
+##  "archiveFilePath", "archiveCoverPath"?}
+func taptap_cloudsave_create_archive(params: Dictionary) -> void:
+	if not _sdk:
+		tap_cloudsave_result.emit("createArchive", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapCloudSaveCreateArchive(
+		JSON.stringify(params), _track_oneshot(_on_tap_cloudsave.bind("createArchive")))
+
+
+## TapTap only. Updates an archive; `params.archiveUUID` selects the target.
+func taptap_cloudsave_update_archive(params: Dictionary) -> void:
+	if not _sdk:
+		tap_cloudsave_result.emit("updateArchive", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapCloudSaveUpdateArchive(
+		JSON.stringify(params), _track_oneshot(_on_tap_cloudsave.bind("updateArchive")))
+
+
+## TapTap only. Lists the player's archives.
+func taptap_cloudsave_get_archive_list() -> void:
+	if not _sdk:
+		tap_cloudsave_result.emit("getArchiveList", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapCloudSaveGetArchiveList(_track_oneshot(_on_tap_cloudsave.bind("getArchiveList")))
+
+
+## TapTap only. Downloads one archive to `target_file_path`. The result's
+## data_json carries `filePath` (or the platform's archive payload).
+func taptap_cloudsave_get_archive_data(
+	archive_uuid: String, archive_file_id: String = "", target_file_path: String = ""
+) -> void:
+	if not _sdk:
+		tap_cloudsave_result.emit("getArchiveData", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapCloudSaveGetArchiveData(
+		JSON.stringify({
+			"archiveUUID": archive_uuid,
+			"archiveFileId": archive_file_id if not archive_file_id.is_empty() else archive_uuid,
+			"targetFilePath": target_file_path,
+		}),
+		_track_oneshot(_on_tap_cloudsave.bind("getArchiveData")))
+
+
+## TapTap only. Downloads an archive cover image.
+func taptap_cloudsave_get_archive_cover(
+	archive_uuid: String, archive_file_id: String = "", target_file_path: String = ""
+) -> void:
+	if not _sdk:
+		tap_cloudsave_result.emit("getArchiveCover", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapCloudSaveGetArchiveCover(
+		JSON.stringify({
+			"archiveUUID": archive_uuid,
+			"archiveFileId": archive_file_id if not archive_file_id.is_empty() else archive_uuid,
+			"targetFilePath": target_file_path,
+		}),
+		_track_oneshot(_on_tap_cloudsave.bind("getArchiveCover")))
+
+
+## TapTap only. Deletes one archive by uuid.
+func taptap_cloudsave_delete_archive(archive_uuid: String) -> void:
+	if not _sdk:
+		tap_cloudsave_result.emit("deleteArchive", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapCloudSaveDeleteArchive(
+		JSON.stringify({"archiveUUID": archive_uuid}),
+		_track_oneshot(_on_tap_cloudsave.bind("deleteArchive")))
+
+
+func _on_tap_cloudsave(args: Array, operation: String) -> void:
+	tap_cloudsave_result.emit(
+		operation,
+		_b(args[1]) if args.size() > 1 else false,
+		_s(args[2]) if args.size() > 2 else "",
+		_s(args[3]) if args.size() > 3 else "")
+
+
+# ── TapTap Payment ────────────────────────────────────────────────
+
+## TapTap only. Direct game-item purchase. `params` must be issued by your
+## game server: {"signData", "paySig", "signature"}. Delivering the item still
+## has to happen in the server-side goods-deliver notify handler.
+func taptap_request_payment_game_item(params: Dictionary) -> void:
+	if not _sdk:
+		tap_payment_result.emit(false, -1, NOT_IN_RUNTIME, "")
+		return
+	_sdk.tapRequestPaymentGameItem(
+		JSON.stringify(params), _track_oneshot(_on_tap_payment))
+
+
+func _on_tap_payment(args: Array) -> void:
+	tap_payment_result.emit(
+		_b(args[0]) if args.size() > 0 else false,
+		_i(args[1]) if args.size() > 1 else -1,
+		_s(args[2]) if args.size() > 2 else "",
+		_s(args[3]) if args.size() > 3 else "")
+
+
+# ── TapTap Home Screen Widget ─────────────────────────────────────
+
+## TapTap only. Requests the platform home-screen widget.
+func taptap_create_home_screen_widget() -> void:
+	if not _sdk:
+		tap_widget_result.emit("createHomeScreenWidget", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapCreateHomeScreenWidget(
+		_track_oneshot(_on_tap_widget.bind("createHomeScreenWidget")))
+
+
+## TapTap only. Reports whether the widget exists and is pinned.
+func taptap_has_home_screen_widget_and_pinned() -> void:
+	if not _sdk:
+		tap_widget_result.emit("hasHomeScreenWidgetAndPinned", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapHasHomeScreenWidgetAndPinned(
+		_track_oneshot(_on_tap_widget.bind("hasHomeScreenWidgetAndPinned")))
+
+
+func _on_tap_widget(args: Array, operation: String) -> void:
+	tap_widget_result.emit(
+		operation,
+		_b(args[1]) if args.size() > 1 else false,
+		_s(args[2]) if args.size() > 2 else "",
+		_s(args[3]) if args.size() > 3 else "")
+
+
+# ── TapTap Battle ─────────────────────────────────────────────────
+
+## TapTap only. Creates (and caches) the online-battle manager.
+func taptap_battle_create_manager() -> void:
+	if not _sdk:
+		tap_battle_result.emit("createManager", false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapBattleCreateManager(_track_oneshot(_on_tap_battle_result.bind("createManager")))
+
+
+## TapTap only. Dispatches one online-battle manager call.
+##
+## Supported operations: initialize, connect, disconnect, finalize, destroy,
+## createRoom, matchRoom, joinRoom, getRoomList, leaveRoom, kickRoomPlayer,
+## updatePlayerCustomStatus, updatePlayerCustomProperties,
+## updateRoomProperties, startFrameSync, sendFrameInput, stopFrameSync,
+## sendCustomMessage. `params` is passed through to the platform, whose option
+## shapes differ per call (e.g. sendFrameInput takes {"data": "..."}).
+## `finalize` and `destroy` take no options and report success immediately.
+func taptap_battle_call(operation: String, params: Dictionary = {}) -> void:
+	if not _sdk:
+		tap_battle_result.emit(operation, false, "", NOT_IN_RUNTIME)
+		return
+	_sdk.tapBattleCall(
+		operation, JSON.stringify(params), _track_oneshot(_on_tap_battle_result.bind(operation)))
+
+
+## TapTap only. Subscribes to the 13 online-battle events. The event name is
+## the platform's (`onFrameReceived`, `onPlayerEntered`, …) and `data_json` is
+## the raw payload.
+func taptap_battle_listen() -> void:
+	if not _sdk:
+		return
+	_sdk.tapBattleListen(_track_persistent(_on_tap_battle_event))
+
+
+## TapTap only. Removes the listener registered by taptap_battle_listen().
+func taptap_battle_stop_listening() -> void:
+	if _sdk:
+		_sdk.tapBattleStopListening()
+
+
+func _on_tap_battle_result(args: Array, operation: String) -> void:
+	tap_battle_result.emit(
+		operation,
+		_b(args[1]) if args.size() > 1 else false,
+		_s(args[2]) if args.size() > 2 else "",
+		_s(args[3]) if args.size() > 3 else "")
+
+
+func _on_tap_battle_event(args: Array) -> void:
+	tap_battle_event.emit(
+		_s(args[0]) if args.size() > 0 else "",
+		_s(args[1]) if args.size() > 1 else "")
 
 
 # ── Rewarded Video Ad ─────────────────────────────────────────────

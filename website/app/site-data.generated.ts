@@ -67,6 +67,12 @@ export const releaseData = {
           "innerAudio": "verified",
           "engineWebAudio": "unsupported-host",
           "shareboard": "pending",
+          "achievement": "pending",
+          "leaderboard": "pending",
+          "cloudsave": "pending",
+          "payment": "pending",
+          "homeWidget": "pending",
+          "battle": "pending",
           "backingStore": "1x"
         },
         "ios": {
@@ -76,6 +82,12 @@ export const releaseData = {
           "innerAudio": "verified",
           "engineWebAudio": "verified",
           "shareboard": "pending",
+          "achievement": "pending",
+          "leaderboard": "pending",
+          "cloudsave": "pending",
+          "payment": "pending",
+          "homeWidget": "pending",
+          "battle": "pending",
           "backingStore": "1x"
         }
       }

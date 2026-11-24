@@ -421,7 +421,7 @@ taptap-cli test-qr-code --dev-id <DEV_ID> --app-id <APP_ID> \
 
 所有异步接口都通过 **信号** 回调，不要用 await；同步接口（`storage_*`、`vibrate_*`）直接返回。
 
-235 个公开方法和 88 个信号描述的是完整 Bridge 接口面，不代表四个平台全部兼容。
+260 个公开方法和 97 个信号描述的是完整 Bridge 接口面，不代表四个平台全部兼容。
 同名 API 只有在所选 `wx`、`tt`、`TTMinis.game` 或 `tap` 宿主暴露对应能力时才会分发；
 支付等平台特有流程走显式映射。依赖某个接口前请调用 `can_i_use()`，并用目标宿主
 和目标版本实测。
@@ -1405,6 +1405,50 @@ MiniGameSDK.taptap_off_share_message()
 ```
 
 非 TapTap 平台调用不会静默失败：`tap_shareboard_result` 回 `success=false`，`error` 为 `... is only supported on TapTap`；宿主缺对应方法时回 `tap.<method> is not supported`。逐项签名与真机判据见 [taptap-apis.md](taptap-apis.md)。
+
+### TapTap 成就 / 排行榜 / 云存档 / 支付 / 小组件 / 对战
+
+这些能力只有 TapTap 提供，已全部桥接；逐项签名与真机判据见 [taptap-apis.md](taptap-apis.md)。
+
+```gdscript
+# 成就：先创建管理器，再订阅解锁结果
+MiniGameSDK.taptap_achievement_create(true)
+MiniGameSDK.tap_achievement_unlocked.connect(
+    func(code: String, result_json: String) -> void:
+        print("成就解锁：", code))
+MiniGameSDK.taptap_achievement_listen()
+MiniGameSDK.taptap_achievement_unlock("first_clear")
+
+# 排行榜：params 按平台形状透传
+MiniGameSDK.tap_leaderboard_result.connect(
+    func(operation: String, ok: bool, data: String, error: String) -> void:
+        print(operation, " ok=", ok, " data=", data, " err=", error))
+MiniGameSDK.taptap_leaderboard_submit_scores(
+    {"scores": [{"leaderboardId": "weekly", "score": 1200}]})
+
+# 云存档：单个存档 ≤10MB，封面 ≤512KB
+MiniGameSDK.taptap_cloudsave_create_archive({
+    "archiveMetaData": {"name": "slot1", "summary": "第 3 关", "extra": "", "playtime": 120},
+    "archiveFilePath": "user://save.dat",
+})
+
+# 道具直购：signData / paySig / signature 必须由业务服务端下发
+MiniGameSDK.taptap_request_payment_game_item(
+    {"signData": sign_data, "paySig": pay_sig, "signature": user_sig})
+
+# 桌面小组件
+MiniGameSDK.taptap_has_home_screen_widget_and_pinned()
+
+# 对战：通用分发 + 合并事件
+MiniGameSDK.taptap_battle_create_manager()
+MiniGameSDK.tap_battle_event.connect(
+    func(event_name: String, data_json: String) -> void:
+        print("battle event: ", event_name))
+MiniGameSDK.taptap_battle_listen()
+MiniGameSDK.taptap_battle_call("connect")
+```
+
+非 TapTap 平台调用统一回 `... is only supported on TapTap`。`taptap_achievement_unlock`、`taptap_achievement_increment`、`taptap_battle_call` 这类平台没有回调的调用，`success=true` 只代表**已派发给宿主**，真实结果看事件信号。
 
 ### 兼容性、系统信息与安全区
 
