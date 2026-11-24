@@ -16,7 +16,7 @@
 | 道具直购 Payment | 1 | 已实现；需业务服务端签发参数，真机待接入 |
 | 桌面小组件 HomeWidget | 2 | 已实现，自动化测试通过；真机待接入 |
 | 对战 Battle | 4 | 已实现（通用分发），未验证；平台可能需开通 |
-| 广告 Ads | 3（沿用通用实现） | **平台未开通**；见 §8 |
+| 广告 Ads | 3（沿用通用实现） | 签名已对齐官方文档；待广告位与真机，见 §8 |
 
 ---
 
@@ -217,12 +217,26 @@
 
 本仓库现状：`create_rewarded_ad` / `create_banner_ad` / `create_interstitial_ad` 三个通用方法存在，走 `_api.createRewardedVideoAd` 等微信同名 API；TapTap 上宿主没有同名函数时返回 `createRewardedVideoAd not supported`（优雅失败，不崩）。
 
-开通后再确认（**禁止按微信经验假设**）：
+### 8.1 已确认的签名（官方文档公开，无需开通即可查）
 
-- 参数名是 `adUnitId` 还是 `spaceId`；
-- 奖励判定是 `onClose(res.isEnded)` 还是工作流提到的 `onReward()`；
-- 横竖屏两个广告位如何按 `game.json` 的 `deviceOrientation` 选择；
-- 是否需要在 `game.json` 里额外声明广告配置。
+| 项 | 结论 |
+|---|---|
+| 创建 | `tap.createRewardedVideoAd({ adUnitId })` —— 参数名是 **`adUnitId`**，不是 `spaceId` |
+| 实例 | 激励视频是**单例**，整个生命周期内重复 create 返回同一实例 |
+| 加载 | 创建后自动拉取素材；`onLoad()` / `onError(err)` |
+| 播放 | `show()` 返回 Promise；未加载完成会 reject，标准做法是 `load().then(() => show())` |
+| 奖励判定 | `onClose(res => res.isEnded)` —— 只有 `isEnded === true` 才发奖 |
+| 注销 | `RewardedVideoAd.offClose(listener)` 存在，需传与监听时同一个函数对象 |
+| Banner | `tap.createBannerAd({ adUnitId, adIntervals?, style })`；`style` 的 `left/top/width/height` **全部必填** |
+
+来源（公开文档）：`/minigameapidoc/dev/tutorial/open-capabilities/ad/rewarded-video-ad/`、`/dev/api/ad/tap.createBannerAd/`、`/dev/api/ad/RewardedVideoAd.offClose/`。MCP 的 `get_ad_integration_guide` 之所以要 status = 1，是因为它要往生成代码里注入**真实 `space_id`**，不是文档缺失。
+
+### 8.2 与本仓库的差异
+
+- `create_rewarded_ad` / `show_rewarded_ad` 与文档逐项吻合（含 `load()` 重试与 `offClose`），无需改动。
+- `create_banner_ad` **原先漏传必填的 `style.height`**，已补 `height: 100` 并加自动化测试（`sdk_bridge.test.mjs` 的 `testBannerAdWrapper`）。
+- 仍缺：合法 `adUnitId`（开通后由服务端下发）、横竖屏两个广告位的选择策略、真机播放验证。
+- 风险点：TapTap 激励视频是单例，而 `create_rewarded_ad` 在已有实例时会先 `destroy()` 再创建；destroy 后重建是否正常需真机确认（游戏通常只创建一次，影响面小）。
 
 ---
 

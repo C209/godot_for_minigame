@@ -4855,4 +4855,78 @@ await testTapWidgetWrappers();
 await testTapBattleWrappers();
 await testTapOnlyApisRejectOtherHosts();
 
+async function testRewardedAdWrapper() {
+  const calls = [];
+  let closeHandler = null;
+  const ad = {
+    onError() {},
+    onClose(handler) { closeHandler = handler; calls.push("onClose"); },
+    offClose(handler) { if (handler === closeHandler) closeHandler = null; calls.push("offClose"); },
+    show() { calls.push("show"); return Promise.resolve(); },
+    load() { calls.push("load"); return Promise.resolve(); },
+  };
+  const api = {
+    createRewardedVideoAd(options) { calls.push(["create", options]); return ad; },
+  };
+  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.createRewardedAd("unit_1", (...args) => { result = args; });
+  assert.deepEqual(result, [true, ""]);
+  assert.deepEqual(calls[0], ["create", { adUnitId: "unit_1" }]);
+
+  sdk.showRewardedAd((...args) => { result = args; });
+  assert.equal(calls.at(-1), "show");
+  assert.equal(typeof closeHandler, "function");
+  closeHandler({ isEnded: true });
+  assert.deepEqual(result, [true, ""], "a fully watched ad grants the reward");
+  assert.equal(calls.at(-1), "offClose");
+
+  sdk.showRewardedAd((...args) => { result = args; });
+  closeHandler({ isEnded: false });
+  assert.deepEqual(result, [false, ""], "closing early must not grant the reward");
+
+  const { GodotSDK: NoAdSdk } = await loadSdkWithApi({}, "taptap");
+  result = null;
+  new NoAdSdk().createRewardedAd("unit_1", (...args) => { result = args; });
+  assert.deepEqual(result, [false, "createRewardedVideoAd not supported"]);
+}
+
+async function testBannerAdWrapper() {
+  const calls = [];
+  const banner = {
+    onError() {},
+    show() { calls.push("show"); },
+    hide() { calls.push("hide"); },
+    destroy() { calls.push("destroy"); },
+  };
+  const api = {
+    getSystemInfoSync() { return { windowWidth: 360, windowHeight: 800 }; },
+    createBannerAd(options) { calls.push(options); return banner; },
+  };
+  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const sdk = new GodotSDK();
+
+  let result = null;
+  sdk.createBannerAd("unit_banner", (...args) => { result = args; });
+  assert.deepEqual(result, [true, ""]);
+  assert.equal(calls[0].adUnitId, "unit_banner");
+  // TapTap documents style.height as required.
+  assert.deepEqual(calls[0].style, { left: 0, top: 700, width: 360, height: 100 });
+
+  sdk.showBannerAd();
+  sdk.hideBannerAd();
+  sdk.destroyBannerAd();
+  assert.deepEqual(calls.slice(1), ["show", "hide", "destroy"]);
+
+  const { GodotSDK: NoBannerSdk } = await loadSdkWithApi({}, "taptap");
+  result = null;
+  new NoBannerSdk().createBannerAd("unit_banner", (...args) => { result = args; });
+  assert.deepEqual(result, [false, "createBannerAd not supported"]);
+}
+
+await testRewardedAdWrapper();
+await testBannerAdWrapper();
+
 console.log("sdk_bridge.test.mjs: ok");

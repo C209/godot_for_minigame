@@ -1831,7 +1831,13 @@ class GodotSDK {
       const info = _getSystemInfoModern();
       this._bannerAd = _api.createBannerAd({
         adUnitId: adId,
-        style: { left: 0, top: (info.windowHeight || info.screenHeight) - 100, width: info.windowWidth || info.screenWidth },
+        // TapTap documents style.height as required; WeChat accepts it too.
+        style: {
+          left: 0,
+          top: (info.windowHeight || info.screenHeight) - 100,
+          width: info.windowWidth || info.screenWidth,
+          height: 100,
+        },
       });
       this._bannerAd.onError((err) => console.warn("[SDK] BannerAd error:", _fmtErr(err)));
       if (callback) callback(true, "");
