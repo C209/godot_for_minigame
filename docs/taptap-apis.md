@@ -16,6 +16,7 @@
 | 道具直购 Payment | 1 | 已实现；需业务服务端签发参数，真机待接入 |
 | 桌面小组件 HomeWidget | 2 | 已实现，自动化测试通过；真机待接入 |
 | 对战 Battle | 4 | 已实现（通用分发），未验证；平台可能需开通 |
+| 广告 Ads | 3（沿用通用实现） | **平台未开通**；见 §8 |
 
 ---
 
@@ -39,7 +40,7 @@
 - 模板通过 MCP 工具 `create_share_template` / `list_share_templates` / `get_share_template_info` 管理，修改删除只能去开发者中心。
 - `sceneParam` 可选，字符串；推荐 `JSON.stringify({...})` 携带关卡/分数等，卡片回流后从启动参数读取。
 - 回流读取：`tap.getLaunchOptionsSync().query.sceneParam`（冷启动）、`tap.onShow(res).query.sceneParam`（热启动）、`tap.getEnterOptionsSync()`（通用）。**1.7.0+ 才支持**。
-- 本仓库现状：`MiniGameSDK.get_launch_options()` 已走 `getLaunchOptionsSync`，冷启动可取到 `query.sceneParam`；热启动的 `onShow` 目前只用于前后台切换，**未透传 query**——作为后续小项，不阻塞分享板。
+- 本仓库现状：冷启动走 `MiniGameSDK.get_launch_options()`（内部 `getLaunchOptionsSync`）；热启动走 `app_shown(options_json)` 信号——`onShow` 的 `res` 被原样透传，从 `query.sceneParam` 取即可。唯一没封的是 `getEnterOptionsSync`（统一冷/热两路的便捷版本）。
 
 ### 1.3 本仓库映射
 
@@ -201,7 +202,31 @@
 
 ---
 
-## 8. 后续触发测试的时机
+## 8. 广告（平台未开通，尚未接入）
+
+**结论：TapTap 小游戏有广告变现，是平台一级能力，不是"没有广告"。** Phase 0 只对照了 Unity 产物，而 Unity 走的是微信兼容路径，所以当时漏了这条。
+
+| 事实 | 来源 |
+|---|---|
+| 以激励视频为核心，插屏 / Banner 为可选 | 官方广告接入工作流（MCP `get_ads_integration_workflow`） |
+| 必须先开通广告变现：0 = 未开通，1 = 已生效，2 = 已封禁 | `check_ads_status` |
+| 猫咪消消落（app 1063959）当前 **status = 0 未开通**；开通入口 `https://developer.taptap.cn/forge/425398/app/1063959/operation/ad-monetization` | 2026-11-24 实测 |
+| 广告位按横竖屏各一个（type 1 横 / 2 竖），`space_id` 由服务端下发，**不得手填、不得跨应用复用** | 同上 |
+| 接入代码必须等 status = 1 后由 `get_ad_integration_guide` 生成 | 同上 |
+| Unity 产物只有 `tj.createRewardedVideoAd`（微信兼容别名），**没有 native `tap` 广告封装**，不能作为第一事实源 | `Runtime/minigame-default/unity-sdk/ad.js:80` |
+
+本仓库现状：`create_rewarded_ad` / `create_banner_ad` / `create_interstitial_ad` 三个通用方法存在，走 `_api.createRewardedVideoAd` 等微信同名 API；TapTap 上宿主没有同名函数时返回 `createRewardedVideoAd not supported`（优雅失败，不崩）。
+
+开通后再确认（**禁止按微信经验假设**）：
+
+- 参数名是 `adUnitId` 还是 `spaceId`；
+- 奖励判定是 `onClose(res.isEnded)` 还是工作流提到的 `onReward()`；
+- 横竖屏两个广告位如何按 `game.json` 的 `deviceOrientation` 选择；
+- 是否需要在 `game.json` 里额外声明广告配置。
+
+---
+
+## 9. 后续触发测试的时机
 
 这批接口不做专项真机轮次，按「实际玩法用到哪组就验哪组」推进。每组的验收判据在该组章节；新增一条通用要求：**任何 `tap_*_result` 的 `error` 非空时，必须能定位到宿主 errMsg 或 `only supported on TapTap`，不允许出现「成功但无效果」。**
 

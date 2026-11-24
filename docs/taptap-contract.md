@@ -125,6 +125,8 @@ Unity SDK 的 `Runtime/minigame-default/project.config.json` 与微信小游戏�
 | innerAudio | `tap.createInnerAudioContext()`。真机确认可发声：Android dev 1.0.37、iOS dev 1.0.45（均经 `MiniGameSDK.inner_audio_*`），1.0.45 另确认暂停/续播生效 | 【已确认】✅ 双端 |
 | webAssembly | 见 §1（走 `WXWebAssembly` 原生桥） | 【已确认】✅ |
 
+> **广告能力更正（2026-11-24）**：TapTap 小游戏**有**广告变现（激励视频为核心，插屏/Banner 可选），需先在开发者中心开通广告位。Phase 0 只对照 Unity 产物，而 Unity 的 `ad.js` 走的是 `tj`（微信兼容）路径、没有 native `tap` 广告封装，因此当时漏记。猫咪消消落（app 1063959）当前状态为"未开通"，具体见 [taptap-apis.md](taptap-apis.md) §8。
+>
 > **非 Unity 引擎适配路径（关键证据）**：官方「Cocos/Laya/Egret 引擎适配」文档明确，非 Unity 引擎**自己构造 document 适配层**（`document.createElement` 返回 `tap.createCanvas`/`tap.createImage`/audio/video），用 `tap` API 抹平浏览器差异（touch/缓存/音频/图片/socket/request），开放能力再主动走 `tap` API。**Godot 的 `adapter.js` 正是这一性质**——等价于 Cocos/Laya/Egret 路径，不依赖 UnityPlugin，也不依赖团结容器 `tj`。Unity SDK 走 `tj.*`+UnityPlugin 是「复用微信快适配」的实现选择，非唯一途径。
 
 ### 3.2 渲染/帧率/字体
