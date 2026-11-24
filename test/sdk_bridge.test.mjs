@@ -14,6 +14,7 @@ async function loadSdkWithApi(api, platform = "wechat", options = {}) {
   delete globalThis.wx;
   delete globalThis.tt;
   delete globalThis.tap;
+  delete globalThis.tj;
   delete globalThis.TTMinis;
   delete globalThis.GameGlobal;
   delete globalThis.__godotMiniGamePlatformRuntime;
@@ -29,6 +30,7 @@ async function loadSdkWithApi(api, platform = "wechat", options = {}) {
     globalThis.wx = api;
   }
   if (options.wxAlias) globalThis.wx = options.wxAlias;
+  if (options.tjAlias) globalThis.tj = options.tjAlias;
   if (options.ttAlias) globalThis.tt = options.ttAlias;
 
   const runtimeUrl = moduleUrl(fs.readFileSync(runtimeSourcePath, "utf8"));
@@ -4890,7 +4892,9 @@ async function testRewardedAdWrapper() {
   const { GodotSDK: NoAdSdk } = await loadSdkWithApi({}, "taptap");
   result = null;
   new NoAdSdk().createRewardedAd("unit_1", (...args) => { result = args; });
-  assert.deepEqual(result, [false, "createRewardedVideoAd not supported"]);
+  assert.deepEqual(result, [
+    false, "createRewardedVideoAd is not supported on TapTap (tap/tj/wx)",
+  ]);
 }
 
 async function testBannerAdWrapper() {
@@ -4923,10 +4927,42 @@ async function testBannerAdWrapper() {
   const { GodotSDK: NoBannerSdk } = await loadSdkWithApi({}, "taptap");
   result = null;
   new NoBannerSdk().createBannerAd("unit_banner", (...args) => { result = args; });
-  assert.deepEqual(result, [false, "createBannerAd not supported"]);
+  assert.deepEqual(result, [false, "createBannerAd is not supported on TapTap (tap/tj/wx)"]);
+}
+
+async function testTapAdsUseCompatibilityNamespace() {
+  for (const alias of ["tjAlias", "wxAlias"]) {
+    const calls = [];
+    const compat = {
+      createBannerAd(options) {
+        calls.push(["banner", options]);
+        return { onError() {}, show() {}, hide() {}, destroy() {} };
+      },
+      createRewardedVideoAd(options) {
+        calls.push(["rewarded", options]);
+        return { onError() {}, onClose() {}, offClose() {}, show() { return Promise.resolve(); }, load() { return Promise.resolve(); } };
+      },
+    };
+    // The `tap` namespace has no ad factories: the host exposes them only
+    // through its WeChat-compatible alias.
+    const api = { getSystemInfoSync() { return { windowWidth: 360, windowHeight: 800 }; } };
+    const { GodotSDK } = await loadSdkWithApi(api, "taptap", { [alias]: compat });
+    const sdk = new GodotSDK();
+
+    let result = null;
+    sdk.createBannerAd("unit_banner", (...args) => { result = args; });
+    assert.deepEqual(result, [true, ""], alias);
+    assert.equal(calls[0][0], "banner", alias);
+    assert.equal(calls[0][1].style.height, 100, alias);
+
+    sdk.createRewardedAd("unit_rewarded", (...args) => { result = args; });
+    assert.deepEqual(result, [true, ""], alias);
+    assert.deepEqual(calls[1], ["rewarded", { adUnitId: "unit_rewarded" }], alias);
+  }
 }
 
 await testRewardedAdWrapper();
 await testBannerAdWrapper();
+await testTapAdsUseCompatibilityNamespace();
 
 console.log("sdk_bridge.test.mjs: ok");

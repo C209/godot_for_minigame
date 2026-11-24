@@ -111,6 +111,17 @@ function _unsupported(apiName) {
   return `${_platformPrefix()}.${apiName} is not supported`;
 }
 
+// TapTap hosts ship a WeChat-compatible namespace next to `tap`: `tj` in the
+// Tuanjie container and `wx` on the native runtime (confirmed on device). Ads
+// live there when the `tap` namespace has no implementation, so the ad helpers
+// treat those aliases as part of the TapTap surface. Nothing else does: keeping
+// the fallback per API avoids re-running platform detection against the alias.
+function _taptapCompatNamespaces() {
+  if (PlatformRuntime.platform !== "taptap") return [];
+  const scope = (typeof globalThis !== "undefined") ? globalThis : {};
+  return [scope.tj, scope.wx].filter((namespace) => namespace && typeof namespace === "object");
+}
+
 const TIKTOK_STORAGE_INFO_ERROR =
   "TTMinis.game.getStorageInfoSync is disabled on TikTok Native because it can crash the host process";
 
@@ -1798,11 +1809,40 @@ class GodotSDK {
 
   // ── Rewarded Video Ad ──────────────────────────────────────────
 
+  /** Resolves an ad factory from the TapTap surface: `tap` first, then the
+   * WeChat-compatible `tj` / `wx` namespaces the host also injects. */
+  _adApi(name) {
+    if (_api && typeof _api[name] === "function") {
+      return { owner: _api, fn: _api[name] };
+    }
+    for (const namespace of _taptapCompatNamespaces()) {
+      if (typeof namespace[name] !== "function") continue;
+      if (!this._adCompatLogged) this._adCompatLogged = {};
+      if (!this._adCompatLogged[name]) {
+        this._adCompatLogged[name] = true;
+        console.log(`[SDK] ${name} resolved through the TapTap compatibility namespace`);
+      }
+      return { owner: namespace, fn: namespace[name] };
+    }
+    return null;
+  }
+
+  _adMissing(name) {
+    if (PlatformRuntime.platform === "taptap") {
+      return `${name} is not supported on TapTap (tap/tj/wx)`;
+    }
+    return `${name} not supported`;
+  }
+
   createRewardedAd(adId, callback) {
     try {
       if (this._rewardedAd) { try { this._rewardedAd.destroy(); } catch (_) {} }
-      if (!_api.createRewardedVideoAd) { if (callback) callback(false, "createRewardedVideoAd not supported"); return; }
-      this._rewardedAd = _api.createRewardedVideoAd({ adUnitId: adId });
+      const resolved = this._adApi("createRewardedVideoAd");
+      if (!resolved) {
+        if (callback) callback(false, this._adMissing("createRewardedVideoAd"));
+        return;
+      }
+      this._rewardedAd = resolved.fn.call(resolved.owner, { adUnitId: adId });
       this._rewardedAd.onError((err) => console.warn("[SDK] RewardedAd error:", _fmtErr(err)));
       if (callback) callback(true, "");
     } catch (e) { console.warn("[SDK] createRewardedAd:", _fmtErr(e)); if (callback) callback(false, _fmtErr(e)); }
@@ -1827,9 +1867,13 @@ class GodotSDK {
   createBannerAd(adId, callback) {
     try {
       if (this._bannerAd) { try { this._bannerAd.destroy(); } catch (_) {} }
-      if (!_api.createBannerAd) { if (callback) callback(false, "createBannerAd not supported"); return; }
+      const resolved = this._adApi("createBannerAd");
+      if (!resolved) {
+        if (callback) callback(false, this._adMissing("createBannerAd"));
+        return;
+      }
       const info = _getSystemInfoModern();
-      this._bannerAd = _api.createBannerAd({
+      this._bannerAd = resolved.fn.call(resolved.owner, {
         adUnitId: adId,
         // TapTap documents style.height as required; WeChat accepts it too.
         style: {
@@ -1853,8 +1897,12 @@ class GodotSDK {
   createInterstitialAd(adId, callback) {
     try {
       if (this._interstitialAd) { try { this._interstitialAd.destroy(); } catch (_) {} }
-      if (!_api.createInterstitialAd) { if (callback) callback(false, "createInterstitialAd not supported"); return; }
-      this._interstitialAd = _api.createInterstitialAd({ adUnitId: adId });
+      const resolved = this._adApi("createInterstitialAd");
+      if (!resolved) {
+        if (callback) callback(false, this._adMissing("createInterstitialAd"));
+        return;
+      }
+      this._interstitialAd = resolved.fn.call(resolved.owner, { adUnitId: adId });
       this._interstitialAd.onError((err) => console.warn("[SDK] InterstitialAd error:", _fmtErr(err)));
       if (callback) callback(true, "");
     } catch (e) { console.warn("[SDK] createInterstitialAd:", _fmtErr(e)); if (callback) callback(false, _fmtErr(e)); }

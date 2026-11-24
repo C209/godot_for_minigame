@@ -233,10 +233,12 @@
 
 ### 8.2 与本仓库的差异
 
+- 广告工厂按 **`tap → tj → wx`** 解析：TapTap 宿主的 `tap` 命名空间没有广告实现时，走它同时注入的微信兼容命名空间（团结容器是 `tj`，原生运行时是 `wx`，后者真机已确认注入）。命中兼容层会打一行 `[SDK] <name> resolved through the TapTap compatibility namespace`，真机日志可直接看出走了哪层。
 - `create_rewarded_ad` / `show_rewarded_ad` 与文档逐项吻合（含 `load()` 重试与 `offClose`），无需改动。
 - `create_banner_ad` **原先漏传必填的 `style.height`**，已补 `height: 100` 并加自动化测试（`sdk_bridge.test.mjs` 的 `testBannerAdWrapper`）。
 - 仍缺：合法 `adUnitId`（开通后由服务端下发）、横竖屏两个广告位的选择策略、真机播放验证。
 - 风险点：TapTap 激励视频是单例，而 `create_rewarded_ad` 在已有实例时会先 `destroy()` 再创建；destroy 后重建是否正常需真机确认（游戏通常只创建一次，影响面小）。
+- 兼容层只对**广告**生效，不做全局合并：`PlatformRuntime.api` 仍是 `tap`，避免再次出现「把 TapTap 认成微信」的误判。
 
 ---
 
