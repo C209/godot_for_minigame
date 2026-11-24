@@ -213,11 +213,13 @@
 | 猫咪消消落（app 1063959）当前 **status = 0 未开通**；开通入口 `https://developer.taptap.cn/forge/425398/app/1063959/operation/ad-monetization` | 2026-11-24 实测 |
 | 广告位按横竖屏各一个（type 1 横 / 2 竖），`space_id` 由服务端下发，**不得手填、不得跨应用复用** | 同上 |
 | 接入代码必须等 status = 1 后由 `get_ad_integration_guide` 生成 | 同上 |
-| Unity 产物只有 `tj.createRewardedVideoAd`（微信兼容别名），**没有 native `tap` 广告封装**，不能作为第一事实源 | `Runtime/minigame-default/unity-sdk/ad.js:80` |
+| Unity 产物只有 `tj.createRewardedVideoAd`（微信兼容别名），**没有 native `tap` 广告封装**；`tj` 是调用形状的第一事实源，但产物本身不能证明广告位已开通 | `Runtime/minigame-default/unity-sdk/ad.js:80` |
 
-本仓库现状：`create_rewarded_ad` / `create_banner_ad` / `create_interstitial_ad` 三个通用方法存在，走 `_api.createRewardedVideoAd` 等微信同名 API；TapTap 上宿主没有同名函数时返回 `createRewardedVideoAd not supported`（优雅失败，不崩）。
+本仓库现状：`create_rewarded_ad` / `create_banner_ad` / `create_interstitial_ad` 三个通用方法存在，TapTap 上**只认官方 SDK 的 `tj` 命名空间**（见 §8.2）；`tj` 缺对应工厂时返回 `createRewardedVideoAd is not supported on TapTap (tj)`（优雅失败，不崩，也不回落 `tap`/`wx`）。
 
-### 8.1 已确认的签名（官方文档公开，无需开通即可查）
+### 8.1 官方文档口径（公开，无需开通即可查）
+
+> 冲突时以 §8.2 的 Unity 产物为准：文档没写 `multiton`，产物写了；文档用 `tap.*` 举例，产物只走 `tj.*`。
 
 | 项 | 结论 |
 |---|---|
@@ -233,12 +235,21 @@
 
 ### 8.2 与本仓库的差异
 
-- 广告工厂按 **`tap → tj → wx`** 解析：TapTap 宿主的 `tap` 命名空间没有广告实现时，走它同时注入的微信兼容命名空间（团结容器是 `tj`，原生运行时是 `wx`，后者真机已确认注入）。命中兼容层会打一行 `[SDK] <name> resolved through the TapTap compatibility namespace`，真机日志可直接看出走了哪层。
-- `create_rewarded_ad` / `show_rewarded_ad` 与文档逐项吻合（含 `load()` 重试与 `offClose`），无需改动。
-- `create_banner_ad` **原先漏传必填的 `style.height`**，已补 `height: 100` 并加自动化测试（`sdk_bridge.test.mjs` 的 `testBannerAdWrapper`）。
-- 仍缺：合法 `adUnitId`（开通后由服务端下发）、横竖屏两个广告位的选择策略、真机播放验证。
-- 风险点：TapTap 激励视频是单例，而 `create_rewarded_ad` 在已有实例时会先 `destroy()` 再创建；destroy 后重建是否正常需真机确认（游戏通常只创建一次，影响面小）。
-- 兼容层只对**广告**生效，不做全局合并：`PlatformRuntime.api` 仍是 `tap`，避免再次出现「把 TapTap 认成微信」的误判。
+以 2026-11-24 的排查为准：**广告的调用形状一律照 Unity 产物，不再以公开文档推断**。产物里 `ad.js` 是唯一真正调用 TapTap 广告的代码，形状如下（本仓库已逐条对齐）：
+
+| 调用 | Unity 产物 | 本仓库 |
+|---|---|---|
+| 激励视频工厂 | `tj.createRewardedVideoAd({ adUnitId, multiton })`（`ad.js:78-82`） | 同左；`multiton` 由 `create_rewarded_ad(ad_unit_id, multiton := false)` 透传 |
+| 单例处理 | `multiton` 为假时先 `offLoad/offError/offClose()` 再挂新回调（`ad.js:83-88`） | 同左；此前完全缺失，重复 create 会叠加回调 |
+| 播放 | `TJShowAd`：`show().then(ok).catch(fail)`，**不做隐式重试**（`ad.js:187-203`） | TapTap 先 `load()` 再 `show()`（`TJADLoad`，`ad.js:270-288`），失败即失败；微信/抖音/TikTok 保留原有 `show()` 重试 |
+| 关闭 | `onClose(res => res.isEnded)`（`ad.js:105-114`） | 同左；`offClose` 传同一函数对象 |
+| Banner | `tj.createBannerAd({ adUnitId, adIntervals?, style })`，底部居中时 `{left:0, top:windowHeight-height, width:windowWidth, height}`（`ad.js:36-47`），`height` 由调用方给 | 同左；`create_banner_ad(ad_unit_id, height := 100)`，并在 `onResize` 里按 `ad.js:65-75` 重新居中 |
+| 插屏 | `tj.createInterstitialAd({ adUnitId })`（`ad.js:117-121`） | 同左 |
+
+- **解析只认 `tj`，不做 `tap`/`wx` 回落**：Unity SDK 是 TapTap 官方 SDK，它的广告模块只调 `tj`（`ad.js:10/80/119`）；宿主虽然同时注入 `tap` 与微信兼容别名 `wx`，但付费面走"看起来像"的命名空间比直接报错更危险。命中时打一行 `[SDK] <name> resolved via TapTap namespace "tj"`；`tj` 缺失即报 `… is not supported on TapTap (tj)`。
+- 广告之外的能力仍只走 `PlatformRuntime.api`（TapTap 上是 `tap`），两条路互不影响。
+- 已删除的自造行为：① 重复 create 时先 `destroy()`（产物依赖单例 + `off*`，不销毁共享实例）；② `show().catch(() => load().then(show))` 的隐式重试（产物把 load 与 show 分开暴露）。
+- 仍缺：合法 `adUnitId`（开通后由服务端下发）、横竖屏两个广告位的选择策略、真机播放验证；产物里的 `createCustomAd` / `reportShareBehavior` / `ad.style` 读写与 `onResize` 回调暂未封装。
 
 ---
 
@@ -246,3 +257,31 @@
 
 这批接口不做专项真机轮次，按「实际玩法用到哪组就验哪组」推进。每组的验收判据在该组章节；新增一条通用要求：**任何 `tap_*_result` 的 `error` 非空时，必须能定位到宿主 errMsg 或 `only supported on TapTap`，不允许出现「成功但无效果」。**
 
+
+---
+
+## 10. 与 Unity 产物（`TapSDK.jslib`）的逐项对齐状态
+
+判定口径：**只比"我们发给宿主的调用"，不比封装风格**。`✅` = 方法名、选项键、回调形状与 jslib 一致；`⚠️` = 调用一致但我们有额外汇总/校验；`❌` = 产物有、本仓库未封装。
+
+| 组 | 状态 | 说明 |
+|---|---|---|
+| 分享板 5 | ✅ | `showShareboard` 现在**原样透传调用方字段**（jslib:29-35 只丢 null 并追加回调），仅规范化 `templateId`/`sceneParam`；`onShareMessage` 监听对象补上 `complete`（jslib:18-24），但 complete 不额外发事件 |
+| 成就 7 | ✅ | `createAchievementManager()` 无参 / `{toastEnable}` 两种形态、`manager.toastEnable = x` 属性赋值、`unlockAchievement({achievementId})`、`incrementAchievement({achievementId, steps})`、`showAchievements()`、`registerListener({onAchievementSuccess, onAchievementFailure})`、`unregisterListener()` 全部一致 |
+| 桌面小组件 2 | ✅ | 仅回调三件套，与 jslib:113-118 一致 |
+| 排行榜 5 | ✅ | `params.callback = { onSuccess, onFailure(code, message) }`，`onFailure` 为位置参数 |
+| 支付 1 | ✅ | `requestPaymentGameItem(params + success/fail/complete)`，`errCode/errMsg` 兜底与 jslib:184-202 一致 |
+| 云存档 6 | ✅ | `archiveUUID` / `archiveMetaData{name,summary,extra,playtime}` / `archiveFilePath` / `archiveCoverPath` 键名一致；`fail(errMsg, errno)` 位置参数；`complete` 空实现 |
+| 对战 18 | ✅ | 含 `updatePlayerCustomProperties({properties: <string>})` 与 `sendFrameInput({data: <string>})` 的字符串序列化（jslib:681/729）；`finalize`/`destroy` 无参无回调；`unregisterListener(listener)` 传注册时的同一对象 |
+| 对战 RNG 3 | ❌ | `newRandomNumberGenerator(seed)` / `randomInt()` / `free()` 未封装（jslib:793-844）。需要与其它端逐帧一致时才必要，Godot 侧可先用自带 `RandomNumberGenerator` |
+| 广告 3 | ✅ | 只走 `tj`，形状见 §8.2 |
+| 广告附加 3 | ❌ | `createCustomAd` / `reportShareBehavior` / `ad.style` 读写未封装（`ad.js:144-177, 289-298, 178-186`） |
+
+**有意偏离（不是形状不一致）**：
+
+1. `showShareboard` 仍要求非空 `templateId`、`requestPaymentGameItem` 仍要求 `signData` —— 产物只透传，我们在入口做参数校验，失败信息更早更明确。
+2. `createAchievementManager` 幂等：已有 manager 时复用并只改 `toastEnable`，产物会无条件重建（重建会丢已注册监听）。
+3. `getArchiveData` / `getArchiveCover` 返回平台给的 `{filePath}`，不替调用方读文件；需要内容时用 `MiniGameSDK.file_system_read_file(filePath)`。
+4. 每个 `success`/`fail`/`complete` 回调都被压成"一次性结果"，产物是把三种回调分别转发（C# 侧另有 complete 通道）。
+
+**已知边界（不修，仅记录）**：`call_api()` 是原始逃逸口，解析的是 `PlatformRuntime.api`（TapTap 上是 `tap`），因此它**调不到 `tj.*`**；反过来，若宿主在 `tap` 上也提供同名广告工厂，`call_api` 会直接打过去，不受"广告只走 `tj`"约束。也就是说该策略只在强类型方法上生效，`call_api` 属于使用者自担风险的兜底通道。

@@ -766,6 +766,8 @@ MiniGameSDK.show_interstitial_ad()
 ```
 
 > 广告位 ID 必须在平台后台审核通过，模拟器里通常是测试 ID。
+>
+> TapTap 上广告工厂只取官方 Unity SDK 的 `tj` 命名空间，`tap` 与微信兼容别名 `wx` 不参与广告解析（哪层命中会打日志）；两个可选参数按 TapTap 产物形状暴露：`create_rewarded_ad(ad_unit_id, multiton)` 与 `create_banner_ad(ad_unit_id, height)`（Banner 固定在底部居中）。详见 `docs/taptap-apis.md` §8。
 
 ### 支付（按 Provider 映射）
 

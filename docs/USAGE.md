@@ -804,6 +804,8 @@ MiniGameSDK.show_interstitial_ad()
 ```
 
 > Ad unit IDs must be approved in the platform console. Simulator usually accepts test IDs.
+>
+> On TapTap the ad factories come from the official Unity SDK's `tj` namespace only; `tap` and the host's WeChat alias `wx` are not used for ads. Two optional arguments are TapTap-shaped: `create_rewarded_ad(ad_unit_id, multiton)` and `create_banner_ad(ad_unit_id, height)` (banner sits bottom-centre). See `docs/taptap-apis.md` §8.
 
 ### Payment (provider-specific)
 
