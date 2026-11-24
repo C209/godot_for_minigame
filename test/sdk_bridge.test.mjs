@@ -10,6 +10,12 @@ function moduleUrl(source) {
   return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}#${Date.now()}-${Math.random()}`;
 }
 
+// Promise chains inside the SDK settle on a microtask; assertions that inspect
+// call order after show()/load() need one timer turn.
+function flushMicrotasks() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function loadSdkWithApi(api, platform = "wechat", options = {}) {
   delete globalThis.wx;
   delete globalThis.tt;
@@ -4541,6 +4547,18 @@ async function testTapShareboardWrappers() {
 
   sdk.tapOffShareMessage();
   assert.equal(offCalls, 1);
+  assert.equal(typeof listener.complete, "function", "the Unity callback trio includes complete");
+
+  // TapSDK.jslib:29-35 forwards the caller's option object as-is, so fields we
+  // do not know about must reach the host untouched.
+  calls.length = 0;
+  sdk.tapShowShareboard(
+    JSON.stringify({ templateId: " tpl_42 ", sceneParam: { level: 3 }, extraFlag: true }),
+    () => {},
+  );
+  assert.equal(calls[0][1].templateId, "tpl_42");
+  assert.equal(calls[0][1].sceneParam, '{"level":3}');
+  assert.equal(calls[0][1].extraFlag, true);
 }
 
 async function testTapShareboardRejectsOtherHosts() {
@@ -4775,6 +4793,14 @@ async function testTapBattleWrappers() {
     },
     registerListener(config) { listener = config; calls.push(["listen"]); },
     unregisterListener() { calls.push(["unlisten"]); },
+    updatePlayerCustomProperties(options) {
+      calls.push(["updatePlayerCustomProperties", options]);
+      options.success({});
+    },
+    sendFrameInput(options) {
+      calls.push(["sendFrameInput", options]);
+      options.success({});
+    },
   };
   const api = { getOnlineBattleManager() { return manager; } };
   const { GodotSDK } = await loadSdkWithApi(api, "taptap");
@@ -4797,6 +4823,23 @@ async function testTapBattleWrappers() {
 
   sdk.tapBattleCall("notARealOp", JSON.stringify({}), (...args) => { result = args; });
   assert.deepEqual(result, ["notARealOp", false, "", 'battle operation "notARealOp" is not supported']);
+
+  // TapSDK.jslib:681 and :729 hand these two payloads to the host as strings.
+  sdk.tapBattleCall(
+    "updatePlayerCustomProperties", JSON.stringify({ properties: { hp: 3 } }),
+    (...args) => { result = args; });
+  assert.deepEqual(result, ["updatePlayerCustomProperties", true, "{}", ""]);
+  assert.equal(calls.at(-1)[1].properties, '{"hp":3}');
+
+  sdk.tapBattleCall(
+    "sendFrameInput", JSON.stringify({ data: { frame: 7 } }),
+    (...args) => { result = args; });
+  assert.deepEqual(result, ["sendFrameInput", true, "{}", ""]);
+  assert.equal(calls.at(-1)[1].data, '{"frame":7}');
+
+  sdk.tapBattleCall(
+    "sendFrameInput", JSON.stringify({ data: "raw" }), (...args) => { result = args; });
+  assert.equal(calls.at(-1)[1].data, "raw", "an already-stringified payload is not double-encoded");
 
   const events = [];
   sdk.tapBattleListen((event, json) => { events.push([event, json]); });
@@ -4860,109 +4903,153 @@ await testTapOnlyApisRejectOtherHosts();
 async function testRewardedAdWrapper() {
   const calls = [];
   let closeHandler = null;
+  let detaches = 0;
   const ad = {
     onError() {},
     onClose(handler) { closeHandler = handler; calls.push("onClose"); },
     offClose(handler) { if (handler === closeHandler) closeHandler = null; calls.push("offClose"); },
+    offLoad() { detaches += 1; calls.push("offLoad"); },
+    offError() { detaches += 1; calls.push("offError"); },
     show() { calls.push("show"); return Promise.resolve(); },
     load() { calls.push("load"); return Promise.resolve(); },
   };
-  const api = {
+  const tj = {
     createRewardedVideoAd(options) { calls.push(["create", options]); return ad; },
   };
-  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const { GodotSDK } = await loadSdkWithApi({}, "taptap", { tjAlias: tj });
   const sdk = new GodotSDK();
 
   let result = null;
-  sdk.createRewardedAd("unit_1", (...args) => { result = args; });
+  sdk.createRewardedAd("unit_1", false, (...args) => { result = args; });
   assert.deepEqual(result, [true, ""]);
-  assert.deepEqual(calls[0], ["create", { adUnitId: "unit_1" }]);
+  // ad.js:83-88 — the singleton factory returns one shared instance, so the
+  // previous handlers must come off before the new ones go on.
+  assert.deepEqual(calls[0], ["create", { adUnitId: "unit_1", multiton: false }]);
+  assert.deepEqual(calls.slice(1), ["offLoad", "offError", "offClose"]);
+  assert.equal(detaches, 2);
 
+  calls.length = 0;
   sdk.showRewardedAd((...args) => { result = args; });
-  assert.equal(calls.at(-1), "show");
+  await flushMicrotasks();
+  // ad.js:270-288 (TJADLoad) + ad.js:187-203 (TJShowAd): load first, then show,
+  // with no implicit show-retry.
+  assert.deepEqual(calls, ["onClose", "load", "show"]);
   assert.equal(typeof closeHandler, "function");
   closeHandler({ isEnded: true });
   assert.deepEqual(result, [true, ""], "a fully watched ad grants the reward");
   assert.equal(calls.at(-1), "offClose");
 
   sdk.showRewardedAd((...args) => { result = args; });
+  await flushMicrotasks();
   closeHandler({ isEnded: false });
   assert.deepEqual(result, [false, ""], "closing early must not grant the reward");
 
+  // multiton = true keeps every instance independent, so no handler detach.
+  calls.length = 0;
+  detaches = 0;
+  sdk.createRewardedAd("unit_1", true, (...args) => { result = args; });
+  assert.deepEqual(result, [true, ""]);
+  assert.deepEqual(calls, [["create", { adUnitId: "unit_1", multiton: true }]]);
+  assert.equal(detaches, 0);
+
   const { GodotSDK: NoAdSdk } = await loadSdkWithApi({}, "taptap");
   result = null;
-  new NoAdSdk().createRewardedAd("unit_1", (...args) => { result = args; });
+  new NoAdSdk().createRewardedAd("unit_1", false, (...args) => { result = args; });
   assert.deepEqual(result, [
-    false, "createRewardedVideoAd is not supported on TapTap (tap/tj/wx)",
+    false, "createRewardedVideoAd is not supported on TapTap (tj)",
   ]);
 }
 
 async function testBannerAdWrapper() {
   const calls = [];
+  let resizeHandler = null;
   const banner = {
+    style: {},
     onError() {},
+    onResize(handler) { resizeHandler = handler; },
     show() { calls.push("show"); },
     hide() { calls.push("hide"); },
     destroy() { calls.push("destroy"); },
   };
-  const api = {
+  const tj = {
     getSystemInfoSync() { return { windowWidth: 360, windowHeight: 800 }; },
     createBannerAd(options) { calls.push(options); return banner; },
   };
-  const { GodotSDK } = await loadSdkWithApi(api, "taptap");
+  const { GodotSDK } = await loadSdkWithApi({}, "taptap", { tjAlias: tj });
   const sdk = new GodotSDK();
 
   let result = null;
-  sdk.createBannerAd("unit_banner", (...args) => { result = args; });
+  sdk.createBannerAd("unit_banner", 100, (...args) => { result = args; });
   assert.deepEqual(result, [true, ""]);
   assert.equal(calls[0].adUnitId, "unit_banner");
-  // TapTap documents style.height as required.
+  // ad.js:41-46 — fixed bottom middle: window width, caller height, bottom top.
   assert.deepEqual(calls[0].style, { left: 0, top: 700, width: 360, height: 100 });
+
+  // ad.js:65-75 — only left/top are rewritten, the size stays whatever the
+  // host reported; that is what keeps the banner pinned bottom-centre.
+  banner.style = { left: 0, top: 700, width: 360, height: 100 };
+  resizeHandler({ width: 320, height: 50 });
+  assert.deepEqual(banner.style, { left: 20, top: 750, width: 360, height: 100 });
+
+  sdk.createBannerAd("unit_banner", 120, (...args) => { result = args; });
+  assert.deepEqual(result, [true, ""]);
+  assert.equal(calls.at(-1).style.height, 120);
+  assert.equal(calls.at(-1).style.top, 680);
 
   sdk.showBannerAd();
   sdk.hideBannerAd();
   sdk.destroyBannerAd();
-  assert.deepEqual(calls.slice(1), ["show", "hide", "destroy"]);
+  assert.deepEqual(calls.slice(-3), ["show", "hide", "destroy"]);
 
   const { GodotSDK: NoBannerSdk } = await loadSdkWithApi({}, "taptap");
   result = null;
-  new NoBannerSdk().createBannerAd("unit_banner", (...args) => { result = args; });
-  assert.deepEqual(result, [false, "createBannerAd is not supported on TapTap (tap/tj/wx)"]);
+  new NoBannerSdk().createBannerAd("unit_banner", 100, (...args) => { result = args; });
+  assert.deepEqual(result, [false, "createBannerAd is not supported on TapTap (tj)"]);
 }
 
-async function testTapAdsUseCompatibilityNamespace() {
-  for (const alias of ["tjAlias", "wxAlias"]) {
+async function testTapAdsOnlyUseTjNamespace() {
+  // The Unity SDK is TapTap's official SDK and its ad module calls `tj` only.
+  // A factory on `tap` or the WeChat alias `wx` must NOT be used, even when it
+  // exists: driving a paid surface through a lookalike namespace is worse than
+  // failing loudly.
+  for (const stray of ["tap", "wxAlias"]) {
     const calls = [];
-    const compat = {
-      createBannerAd(options) {
-        calls.push(["banner", options]);
-        return { onError() {}, show() {}, hide() {}, destroy() {} };
-      },
-      createRewardedVideoAd(options) {
-        calls.push(["rewarded", options]);
-        return { onError() {}, onClose() {}, offClose() {}, show() { return Promise.resolve(); }, load() { return Promise.resolve(); } };
-      },
+    const strayApi = {
+      getSystemInfoSync() { return { windowWidth: 360, windowHeight: 800 }; },
+      createRewardedVideoAd(options) { calls.push(["rewarded", options]); return { onError() {} }; },
+      createBannerAd(options) { calls.push(["banner", options]); return { style: {}, onError() {} }; },
     };
-    // The `tap` namespace has no ad factories: the host exposes them only
-    // through its WeChat-compatible alias.
-    const api = { getSystemInfoSync() { return { windowWidth: 360, windowHeight: 800 }; } };
-    const { GodotSDK } = await loadSdkWithApi(api, "taptap", { [alias]: compat });
+    const tapApi = stray === "tap" ? strayApi : {};
+    const options = stray === "wxAlias" ? { wxAlias: strayApi } : {};
+    const { GodotSDK } = await loadSdkWithApi(tapApi, "taptap", options);
     const sdk = new GodotSDK();
 
     let result = null;
-    sdk.createBannerAd("unit_banner", (...args) => { result = args; });
-    assert.deepEqual(result, [true, ""], alias);
-    assert.equal(calls[0][0], "banner", alias);
-    assert.equal(calls[0][1].style.height, 100, alias);
-
-    sdk.createRewardedAd("unit_rewarded", (...args) => { result = args; });
-    assert.deepEqual(result, [true, ""], alias);
-    assert.deepEqual(calls[1], ["rewarded", { adUnitId: "unit_rewarded" }], alias);
+    sdk.createRewardedAd("unit", false, (...args) => { result = args; });
+    assert.deepEqual(
+      result, [false, "createRewardedVideoAd is not supported on TapTap (tj)"], stray);
+    result = null;
+    sdk.createBannerAd("unit", 100, (...args) => { result = args; });
+    assert.deepEqual(result, [false, "createBannerAd is not supported on TapTap (tj)"], stray);
+    assert.deepEqual(calls, [], `${stray} must never receive an ad call`);
   }
+
+  // With `tj` present it is the one and only source.
+  const tjCalls = [];
+  const tj = {
+    getSystemInfoSync() { return { windowWidth: 360, windowHeight: 800 }; },
+    createRewardedVideoAd(options) { tjCalls.push(["rewarded", options]); return { onError() {}, offLoad() {}, offError() {}, offClose() {}, onClose() {} }; },
+  };
+  const tapDecoy = {
+    createRewardedVideoAd(options) { tjCalls.push(["tap-decoy", options]); return { onError() {} }; },
+  };
+  const resolved = await loadSdkWithApi(tapDecoy, "taptap", { tjAlias: tj });
+  new resolved.GodotSDK().createRewardedAd("unit", false, () => {});
+  assert.deepEqual(tjCalls, [["rewarded", { adUnitId: "unit", multiton: false }]]);
 }
 
 await testRewardedAdWrapper();
 await testBannerAdWrapper();
-await testTapAdsUseCompatibilityNamespace();
+await testTapAdsOnlyUseTjNamespace();
 
 console.log("sdk_bridge.test.mjs: ok");

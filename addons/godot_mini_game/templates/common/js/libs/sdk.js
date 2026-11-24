@@ -25,7 +25,10 @@ function _fmtErr(err) {
   if (err == null) return "(no error info)";
   if (typeof err === "string") return err;
   const parts = [];
-  if (err.errCode !== undefined) parts.push(`code=${err.errCode}`);
+  // Ad errors can arrive with either spelling; the Unity SDK reads both
+  // (Runtime/minigame-default/unity-sdk/ad.js:18).
+  const code = err.errCode !== undefined ? err.errCode : err.err_code;
+  if (code !== undefined) parts.push(`code=${code}`);
   if (err.errMsg) parts.push(err.errMsg);
   else if (err.message) parts.push(err.message);
   if (parts.length === 0) {
@@ -111,15 +114,23 @@ function _unsupported(apiName) {
   return `${_platformPrefix()}.${apiName} is not supported`;
 }
 
-// TapTap hosts ship a WeChat-compatible namespace next to `tap`: `tj` in the
-// Tuanjie container and `wx` on the native runtime (confirmed on device). Ads
-// live there when the `tap` namespace has no implementation, so the ad helpers
-// treat those aliases as part of the TapTap surface. Nothing else does: keeping
-// the fallback per API avoids re-running platform detection against the alias.
-function _taptapCompatNamespaces() {
-  if (PlatformRuntime.platform !== "taptap") return [];
+// TapTap ad factories live on `tj`. That is not a guess: the Unity SDK is
+// TapTap's official SDK, and its ad module calls `tj` exclusively —
+//   Runtime/minigame-default/unity-sdk/ad.js:10   tj.createBannerAd(config)
+//   Runtime/minigame-default/unity-sdk/ad.js:80   tj.createRewardedVideoAd(config)
+//   Runtime/minigame-default/unity-sdk/ad.js:119  tj.createInterstitialAd(config)
+// The host also injects WeChat-compatible `tap` / `wx` namespaces, but they are
+// deliberately NOT consulted for ads: resolving a paid surface against a
+// lookalike namespace is how the wrong API gets driven in production. Only ads
+// read `tj`; PlatformRuntime.api stays `tap` for everything else.
+function _taptapAdNamespace() {
+  if (PlatformRuntime.platform !== "taptap") return null;
   const scope = (typeof globalThis !== "undefined") ? globalThis : {};
-  return [scope.tj, scope.wx].filter((namespace) => namespace && typeof namespace === "object");
+  const namespace = scope.tj;
+  if (!namespace) return null;
+  return (typeof namespace === "object" || typeof namespace === "function")
+    ? namespace
+    : null;
 }
 
 const TIKTOK_STORAGE_INFO_ERROR =
@@ -1254,8 +1265,12 @@ class GodotSDK {
     }
   }
 
-  /** paramsJson: { templateId, sceneParam? } — templateId is the approved
-   * `template_code` from the TapTap developer console. */
+  /** paramsJson: { templateId, sceneParam?, ... } — templateId is the approved
+   * `template_code` from the TapTap developer console.
+   *
+   * TapSDK.jslib:29-35 forwards the caller's option object untouched (it only
+   * drops nulls and appends the callback trio), so unknown fields have to
+   * survive here too. Only the two documented fields are normalised. */
   tapShowShareboard(paramsJson, callback) {
     const params = _jsonObject(paramsJson);
     const templateId = typeof params.templateId === "string" ? params.templateId.trim() : "";
@@ -1263,11 +1278,11 @@ class GodotSDK {
       callback("showShareboard", false, "", "showShareboard requires a templateId");
       return;
     }
-    const options = { templateId };
-    if (params.sceneParam != null && params.sceneParam !== "") {
-      options.sceneParam = typeof params.sceneParam === "string"
-        ? params.sceneParam
-        : _jsonSafe(params.sceneParam);
+    const options = Object.assign({}, params, { templateId });
+    if (options.sceneParam == null || options.sceneParam === "") {
+      delete options.sceneParam;
+    } else if (typeof options.sceneParam !== "string") {
+      options.sceneParam = _jsonSafe(options.sceneParam);
     }
     this._taptapShareboard("showShareboard", "showShareboard", options, callback);
   }
@@ -1318,7 +1333,11 @@ class GodotSDK {
       const errMsg = payload.errMsg == null ? "" : String(payload.errMsg);
       callback(channel, errMsg, _jsonSafe(payload));
     };
-    this._tapShareMessageListener = { success: emit, fail: emit };
+    // Unity hands the host the full { success, fail, complete } trio
+    // (TapSDK.jslib:18-24). This bridge reports through success/fail, so
+    // complete is declared to keep the object shape identical and stays silent
+    // instead of emitting a second event for the same share.
+    this._tapShareMessageListener = { success: emit, fail: emit, complete: () => {} };
     try {
       _api.onShareMessage(this._tapShareMessageListener);
     } catch (e) {
@@ -1370,8 +1389,11 @@ class GodotSDK {
       return manager;
     }
     if (typeof _api.createAchievementManager !== "function") return null;
-    manager = _api.createAchievementManager(
-      toastEnable === undefined ? {} : { toastEnable: !!toastEnable });
+    // TapSDK.jslib:55/61/82/89/95/104 creates the manager with no argument when
+    // the caller has no option, and with { toastEnable } when it does.
+    manager = toastEnable === undefined
+      ? _api.createAchievementManager()
+      : _api.createAchievementManager({ toastEnable: !!toastEnable });
     return this._taptapSetManager("achievement", manager);
   }
 
@@ -1715,7 +1737,8 @@ class GodotSDK {
   }
 
   /** Generic dispatcher: the battle manager exposes ~20 methods whose option
-   * shapes differ per call, so params are passed through to the platform. */
+   * shapes differ per call, so params travel as given — except the two payloads
+   * TapSDK.jslib stringifies, which are normalised below. */
   tapBattleCall(operation, paramsJson, callback) {
     const action = String(operation || "");
     if (!this._taptapSupported(action, callback)) return;
@@ -1750,9 +1773,23 @@ class GodotSDK {
       callback(action, !!ok, ok ? _jsonSafe(data || {}) : "", ok ? "" : _fmtErr(error));
     };
 
+    // TapSDK.jslib passes these two payloads as strings, not objects:
+    //   :681  updatePlayerCustomProperties({ properties: propertiesStr })
+    //   :729  sendFrameInput({ data: jsonDataStr })
+    // Callers hand us a Dictionary, so the string conversion happens here.
+    const params = _jsonObject(paramsJson);
+    if (action === "updatePlayerCustomProperties"
+        && params.properties !== undefined && typeof params.properties !== "string") {
+      params.properties = _jsonSafe(params.properties);
+    }
+    if (action === "sendFrameInput"
+        && params.data !== undefined && typeof params.data !== "string") {
+      params.data = _jsonSafe(params.data);
+    }
+
     try {
       const result = manager[action]({
-        ..._jsonObject(paramsJson),
+        ...params,
         success: (res) => finish(true, res || {}),
         fail: (error) => finish(false, null, error),
         complete: (res) => {
@@ -1807,83 +1844,169 @@ class GodotSDK {
     }
   }
 
-  // ── Rewarded Video Ad ──────────────────────────────────────────
+  // ── Ad factory resolution ──────────────────────────────────────
+  //
+  // Option shapes below are copied from the Unity SDK adapter
+  // (Runtime/minigame-default/unity-sdk/ad.js), the only shipped code that
+  // actually calls TapTap ads:
+  //   createRewardedVideoAd({ adUnitId, multiton })      ad.js:78-116
+  //   createBannerAd({ adUnitId, adIntervals?, style })   ad.js:7-35, 36-77
+  //   createInterstitialAd({ adUnitId })                 ad.js:117-143
+  // When this file disagrees with that adapter, the adapter wins.
 
-  /** Resolves an ad factory from the TapTap surface: `tap` first, then the
-   * WeChat-compatible `tj` / `wx` namespaces the host also injects. */
   _adApi(name) {
-    if (_api && typeof _api[name] === "function") {
-      return { owner: _api, fn: _api[name] };
-    }
-    for (const namespace of _taptapCompatNamespaces()) {
-      if (typeof namespace[name] !== "function") continue;
-      if (!this._adCompatLogged) this._adCompatLogged = {};
-      if (!this._adCompatLogged[name]) {
-        this._adCompatLogged[name] = true;
-        console.log(`[SDK] ${name} resolved through the TapTap compatibility namespace`);
+    if (PlatformRuntime.platform === "taptap") {
+      const namespace = _taptapAdNamespace();
+      if (!namespace || typeof namespace[name] !== "function") return null;
+      if (!this._adResolution) this._adResolution = {};
+      if (!this._adResolution[name]) {
+        this._adResolution[name] = "tj";
+        console.log(`[SDK] ${name} resolved via TapTap namespace "tj"`);
       }
-      return { owner: namespace, fn: namespace[name] };
+      return { owner: namespace, fn: namespace[name], namespace: "tj" };
+    }
+    if (_api && typeof _api[name] === "function") {
+      return { owner: _api, fn: _api[name], namespace: _platformPrefix() };
     }
     return null;
   }
 
   _adMissing(name) {
     if (PlatformRuntime.platform === "taptap") {
-      return `${name} is not supported on TapTap (tap/tj/wx)`;
+      return `${name} is not supported on TapTap (tj)`;
     }
     return `${name} not supported`;
   }
 
-  createRewardedAd(adId, callback) {
+  /** Banner geometry comes from `tj` itself, which is what ad.js:37 does
+   * (`tj.getSystemInfoSync()`). The fallback only fills in a missing size — it
+   * never resolves an ad factory. */
+  _adGeometry(owner) {
+    let info = {};
     try {
-      if (this._rewardedAd) { try { this._rewardedAd.destroy(); } catch (_) {} }
+      if (owner && typeof owner.getSystemInfoSync === "function") {
+        info = owner.getSystemInfoSync() || {};
+      }
+    } catch (_) {
+      info = {};
+    }
+    if (!info.windowWidth || !info.windowHeight) {
+      const fallback = _getSystemInfoModern() || {};
+      info = Object.assign({}, fallback, info);
+    }
+    return info;
+  }
+
+  // ── Rewarded Video Ad ──────────────────────────────────────────
+
+  /**
+   * `multiton` mirrors ad.js:83-88: a falsy value selects the platform's
+   * singleton, and the previous handlers must be detached before the new ones
+   * attach, otherwise every create stacks another set of callbacks.
+   */
+  createRewardedAd(adId, multiton, callback) {
+    try {
       const resolved = this._adApi("createRewardedVideoAd");
       if (!resolved) {
         if (callback) callback(false, this._adMissing("createRewardedVideoAd"));
         return;
       }
-      this._rewardedAd = resolved.fn.call(resolved.owner, { adUnitId: adId });
-      this._rewardedAd.onError((err) => console.warn("[SDK] RewardedAd error:", _fmtErr(err)));
+      const multi = !!multiton;
+      const options = { adUnitId: adId };
+      if (PlatformRuntime.platform === "taptap") options.multiton = multi;
+      const ad = resolved.fn.call(resolved.owner, options);
+      this._rewardedAd = ad;
+      if (!multi) {
+        this._adDetach(ad, ["offLoad", "offError", "offClose"]);
+      }
+      ad.onError((err) => console.warn("[SDK] RewardedAd error:", _fmtErr(err)));
       if (callback) callback(true, "");
     } catch (e) { console.warn("[SDK] createRewardedAd:", _fmtErr(e)); if (callback) callback(false, _fmtErr(e)); }
+  }
+
+  /** Best-effort handler detach. Missing off* methods are normal on hosts that
+   * never handed out a listener, so they are not an error. */
+  _adDetach(ad, methodNames) {
+    for (const name of methodNames) {
+      if (!ad || typeof ad[name] !== "function") continue;
+      try { ad[name](); } catch (_) {}
+    }
   }
 
   showRewardedAd(callback) {
     if (!this._rewardedAd) { callback(false, "No rewarded ad created. Call createRewardedAd first."); return; }
     try {
       const ad = this._rewardedAd;
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        try { ad.offClose(onClose); } catch (_) {}
+        callback(false, _fmtErr(err));
+      };
       const onClose = (res) => {
-        ad.offClose(onClose);
+        if (settled) return;
+        settled = true;
+        try { ad.offClose(onClose); } catch (_) {}
         callback(!!(res && res.isEnded), "");
       };
       ad.onClose(onClose);
-      ad.show().catch(() => ad.load().then(() => ad.show()))
-        .catch((err) => { ad.offClose(onClose); callback(false, _fmtErr(err)); });
+      if (PlatformRuntime.platform === "taptap") {
+        // ad.js:270-288 exposes load() as the only loader and ad.js:187-203
+        // (TJShowAd) reports show() without retrying it. So TapTap loads
+        // explicitly, then shows; a rejection is a real failure.
+        const loaded = typeof ad.load === "function" ? ad.load() : null;
+        Promise.resolve(loaded).then(() => ad.show()).catch(fail);
+      } else {
+        // WeChat/Douyin/TikTok document show() as the entry point and reject
+        // while the creative is not cached yet.
+        ad.show().catch(() => ad.load().then(() => ad.show())).catch(fail);
+      }
     } catch (e) { callback(false, _fmtErr(e)); }
   }
 
   // ── Banner Ad ──────────────────────────────────────────────────
 
-  createBannerAd(adId, callback) {
+  /** Fixed bottom-middle banner: ad.js:36-47 sets width to the window width,
+   * takes the height from the caller and anchors left/top to the bottom. */
+  createBannerAd(adId, height, callback) {
     try {
-      if (this._bannerAd) { try { this._bannerAd.destroy(); } catch (_) {} }
       const resolved = this._adApi("createBannerAd");
       if (!resolved) {
         if (callback) callback(false, this._adMissing("createBannerAd"));
         return;
       }
-      const info = _getSystemInfoModern();
-      this._bannerAd = resolved.fn.call(resolved.owner, {
+      const requested = Number(height);
+      const bannerHeight = Number.isFinite(requested) && requested > 0
+        ? Math.round(requested) : 100;
+      const info = this._adGeometry(resolved.owner);
+      const windowWidth = Number(info.windowWidth || info.screenWidth || 0);
+      const windowHeight = Number(info.windowHeight || info.screenHeight || 0);
+      if (this._bannerAd) { try { this._bannerAd.destroy(); } catch (_) {} }
+      const ad = resolved.fn.call(resolved.owner, {
         adUnitId: adId,
-        // TapTap documents style.height as required; WeChat accepts it too.
         style: {
           left: 0,
-          top: (info.windowHeight || info.screenHeight) - 100,
-          width: info.windowWidth || info.screenWidth,
-          height: 100,
+          top: windowHeight - bannerHeight,
+          width: windowWidth,
+          height: bannerHeight,
         },
       });
-      this._bannerAd.onError((err) => console.warn("[SDK] BannerAd error:", _fmtErr(err)));
+      this._bannerAd = ad;
+      ad.onError((err) => console.warn("[SDK] BannerAd error:", _fmtErr(err)));
+      if (typeof ad.onResize === "function") {
+        // ad.js:65-75 — re-anchor when the host reports a size we did not ask
+        // for, so the banner stays centred instead of drifting off-screen.
+        ad.onResize((res) => {
+          if (!ad.style || typeof ad.style !== "object" || !res) return;
+          const width = Number(res.width || 0);
+          const nextHeight = Number(res.height || 0);
+          if (Math.abs(nextHeight - bannerHeight) > 1 || Math.abs(width - windowWidth) > 1) {
+            ad.style.left = Math.round((windowWidth - width) / 2);
+            ad.style.top = Math.round(windowHeight - nextHeight);
+          }
+        });
+      }
       if (callback) callback(true, "");
     } catch (e) { console.warn("[SDK] createBannerAd:", _fmtErr(e)); if (callback) callback(false, _fmtErr(e)); }
   }

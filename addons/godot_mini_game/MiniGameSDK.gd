@@ -1233,11 +1233,15 @@ func _on_tap_battle_event(args: Array) -> void:
 
 # ── Rewarded Video Ad ─────────────────────────────────────────────
 
-func create_rewarded_ad(ad_unit_id: String) -> void:
+## TapTap only for `multiton`; other hosts ignore it. `multiton = false` uses
+## the platform singleton and detaches the previous handlers first, which is
+## what the Unity SDK adapter does before it registers new ones.
+func create_rewarded_ad(ad_unit_id: String, multiton: bool = false) -> void:
 	if not _sdk:
 		ad_created.emit("rewarded", false, NOT_IN_RUNTIME)
 		return
-	_sdk.createRewardedAd(ad_unit_id, _track_oneshot(_on_ad_created.bind("rewarded")))
+	_sdk.createRewardedAd(
+		ad_unit_id, multiton, _track_oneshot(_on_ad_created.bind("rewarded")))
 
 
 func show_rewarded_ad() -> void:
@@ -1255,11 +1259,14 @@ func _on_rewarded_ad(args: Array) -> void:
 
 # ── Banner Ad ─────────────────────────────────────────────────────
 
-func create_banner_ad(ad_unit_id: String) -> void:
+## `height` is the banner height in logical pixels; the banner sits at the
+## bottom centre, matching the Unity SDK's fixed-bottom-middle placement.
+func create_banner_ad(ad_unit_id: String, height: int = 100) -> void:
 	if not _sdk:
 		ad_created.emit("banner", false, NOT_IN_RUNTIME)
 		return
-	_sdk.createBannerAd(ad_unit_id, _track_oneshot(_on_ad_created.bind("banner")))
+	_sdk.createBannerAd(
+		ad_unit_id, height, _track_oneshot(_on_ad_created.bind("banner")))
 
 
 func show_banner_ad() -> void:
